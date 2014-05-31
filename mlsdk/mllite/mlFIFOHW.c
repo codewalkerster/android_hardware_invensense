@@ -1,23 +1,11 @@
 /*
  $License:
-   Copyright 2011 InvenSense, Inc.
-
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
-
- http://www.apache.org/licenses/LICENSE-2.0
-
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
-  $
+    Copyright (C) 2011 InvenSense Corporation, All Rights Reserved.
+ $
  */
 /*******************************************************************************
  *
- * $Id: mlFIFOHW.c 5653 2011-06-16 21:06:55Z nroyer $
+ * $Id: mlFIFOHW.c 6012 2011-09-09 00:02:21Z mcaramello $
  *
  *******************************************************************************/
 
@@ -35,15 +23,7 @@
 #include <string.h>
 
 #include "mpu.h"
-#if defined CONFIG_MPU_SENSORS_MPU6050A2
-#    include "mpu6050a2.h"
-#elif defined CONFIG_MPU_SENSORS_MPU6050B1
-#    include "mpu6050b1.h"
-#elif defined CONFIG_MPU_SENSORS_MPU3050
-#  include "mpu3050.h"
-#else
-#error Invalid or undefined CONFIG_MPU_SENSORS_MPUxxxx
-#endif
+#include "mpu3050.h"
 #include "mlFIFOHW.h"
 #include "ml.h"
 #include "mldl.h"
@@ -92,7 +72,7 @@ static struct fifo_hw_obj fifo_objHW;
 void inv_init_fifo_hardare(void)
 {
     memset(&fifo_objHW, 0, sizeof(fifo_objHW));
-    fifo_objHW.fifoResetOnOverflow = TRUE;
+    fifo_objHW.fifoResetOnOverflow = true;
 }
 
 /**
@@ -280,7 +260,7 @@ inv_error_t inv_reset_fifo(void)
     struct mldl_cfg *mldl_cfg = inv_get_dl_config();
 
     fifo_objHW.fifoCount = 0;
-    if (mldl_cfg->gyro_is_suspended)
+    if (mldl_cfg->inv_mpu_state->status & MPU_GYRO_IS_SUSPENDED)
         return INV_SUCCESS;
 
     result = inv_serial_read(inv_get_serial_handle(), inv_get_mpu_slave_addr(),

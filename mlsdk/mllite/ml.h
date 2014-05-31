@@ -1,23 +1,11 @@
 /*
  $License:
-   Copyright 2011 InvenSense, Inc.
-
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
-
- http://www.apache.org/licenses/LICENSE-2.0
-
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
-  $
+    Copyright (C) 2011 InvenSense Corporation, All Rights Reserved.
+ $
  */
 /******************************************************************************
  *
- * $Id: ml.h 5653 2011-06-16 21:06:55Z nroyer $
+ * $Id: ml.h 6226 2011-10-22 01:23:16Z mcaramello $
  *
  *****************************************************************************/
 
@@ -43,6 +31,7 @@ extern "C" {
 #endif
 
 #include "mltypes.h"
+#include "ml_features.h"
 #include "mldmp.h"
 #include "mlsl.h"
 #include "mpu.h"
@@ -60,24 +49,24 @@ extern "C" {
 /*  Motion Library Vesion                                                */
 /*************************************************************************/
 
-#define INV_VERSION_MAJOR                 4
-#define INV_VERSION_MINOR                 0
-#define INV_VERSION_SUB_MINOR             0
+#define INV_VERSION_MAJOR                4
+#define INV_VERSION_MINOR                1
+#define INV_VERSION_SUB_MINOR            1
 
-#define INV_VERSION_MAJOR_STR            "4"
-#define INV_VERSION_MINOR_STR            "0"
-#define INV_VERSION_SUB_MINOR_STR        "0"
+#define INV_VERSION_MAJOR_STR           "4"
+#define INV_VERSION_MINOR_STR           "1"
+#define INV_VERSION_SUB_MINOR_STR       "1"
 
-#define INV_VERSION_NONE                 ""
-#define INV_VERSION_PROTOTYPE            "ProtoA "
-#define INV_VERSION_ENGINEERING          "EngA "
-#define INV_VERSION_PRE_ALPHA            "Pre-Alpha "
-#define INV_VERSION_ALPHA                "Alpha "
-#define INV_VERSION_BETA                 "Beta "
-#define INV_VERSION_PRODUCTION           "Production "
+#define INV_VERSION_NONE                ""
+#define INV_VERSION_PROTOTYPE           "ProtoA "
+#define INV_VERSION_ENGINEERING         "EngA "
+#define INV_VERSION_PRE_ALPHA           "Pre-Alpha "
+#define INV_VERSION_ALPHA               "Alpha "
+#define INV_VERSION_BETA                "Beta "
+#define INV_VERSION_PRODUCTION          "Production "
 
 #ifndef INV_VERSION_TYPE
-#define INV_VERSION_TYPE INV_VERSION_NONE
+#define INV_VERSION_TYPE                INV_VERSION_NONE
 #endif
 
 #define INV_VERSION  "InvenSense MPL" " " \
@@ -112,21 +101,7 @@ extern "C" {
 #define INV_INT_SHAKE_PITCH              (0x10)
 #define INV_INT_SHAKE_ROLL               (0x20)
 #define INV_INT_SHAKE_YAW                (0x40)
-
-/*************************************************************************/
-/*  Bias update functions                                                */
-/*************************************************************************/
-#define INV_BIAS_FROM_NO_MOTION          0x0001
-#define INV_BIAS_FROM_GRAVITY            0x0002
-#define INV_BIAS_FROM_TEMPERATURE        0x0004
-#define INV_BIAS_FROM_LPF                0x0008
-#define INV_MAG_BIAS_FROM_MOTION         0x0010
-#define INV_MAG_BIAS_FROM_GYRO           0x0020
-#define INV_LEARN_BIAS_FROM_TEMPERATURE  0x0040
-#define INV_AUTO_RESET_MAG_BIAS          0x0080
-#define INV_REJECT_MAG_DISTURBANCE       0x0100
-#define INV_PROGRESSIVE_NO_MOTION        0x0200
-#define INV_BIAS_FROM_FAST_NO_MOTION     0x0400
+#define INV_INT_DMP_DR                   (0x80)
 
 /*************************************************************************/
 /*  Euler angles and axis names                                          */
@@ -189,8 +164,6 @@ extern "C" {
 #define INV_LOCAL_FIELD                  0x0022
 #define INV_MAG_SCALE                    0x0023
 
-#define INV_RELATIVE_QUATERNION          0x0024
-
 #define SET_QUATERNION                                  0x0001
 #define SET_GYROS                                       0x0002
 #define SET_LINEAR_ACCELERATION                         0x0004
@@ -239,7 +212,6 @@ extern "C" {
 #define INV_GOT_GESTURE                  0x0004
 
 #define INV_MOTION_STATE_CHANGE          0x0006
-#define INV_COMPASS_OFFSET_VALID         0x0007
 
 /*************************************************************************/
 /*  General                                                              */
@@ -260,19 +232,25 @@ extern "C" {
 /* - Defines. - */
 /* ------------ */
 /* Priority for various features */
-#define INV_PRIORITY_BUS_ACCEL              100
-#define INV_PRIORITY_EXTERNAL_SLAVE_MAG     110
-#define INV_PRIORITY_FAST_NO_MOTION         120
-#define INV_PRIORITY_BIAS_NO_MOTION         125
-#define INV_PRIORITY_SET_GYRO_BIASES        150
-#define INV_PRIORITY_TEMP_COMP              175
-#define INV_PRIORITY_CONTROL                200
-#define INV_PRIORITY_EIS                    300
-#define INV_PRIORITY_ORIENTATION            400
-#define INV_PRIORITY_PEDOMETER_FULLPOWER    500
-#define INV_PRIORITY_NAVIGATION_PEDOMETER   600
-#define INV_PRIORITY_GESTURE                700
-#define INV_PRIORITY_GLYPH                  800
+#define INV_PRIORITY_COMPASS_SUPERVISOR              50
+#define INV_PRIORITY_ACCEL_ONLY_FUSION               60
+#define INV_PRIORITY_APPLY_QUATERNION_ADJUSTMENT     75
+#define INV_PRIORITY_KEY_0_96                        90
+#define INV_PRIORITY_BUS_ACCEL                      100
+#define INV_PRIORITY_EXTERNAL_SLAVE_MAG             110
+#define INV_PRIORITY_PROG_NO_MOTION                 115
+#define INV_PRIORITY_FAST_NO_MOTION                 120
+#define INV_PRIORITY_BIAS_NO_MOTION                 125
+#define INV_PRIORITY_SET_GYRO_BIASES                150
+#define INV_PRIORITY_TEMP_COMP                      175
+#define INV_PRIORITY_CONTROL                        200
+#define INV_PRIORITY_EIS                            300
+#define INV_PRIORITY_ORIENTATION                    400
+#define INV_PRIORITY_PEDOMETER_FULLPOWER            500
+#define INV_PRIORITY_NAVIGATION_PEDOMETER           600
+#define INV_PRIORITY_GESTURE                        700
+#define INV_PRIORITY_GLYPH                          800
+#define INV_PRIORITY_POINTER                900
 
 #define MAX_INTERRUPT_PROCESSES 5
 /* Number of quantized accel samples */
@@ -292,120 +270,152 @@ extern "C" {
     /* - Structures. - */
     /* --------------- */
 
+/* Declare inv_obj_t name so it can be referenced in callbacks. */
+struct inv_obj_t;
+
+struct inv_gyro_param {
+    long bias[3];
+    long sens;
+    long sf;
+};
+
+struct inv_accel_param {
+    long bias[3];
+    long scaled_bias[3];
+    long sens;
+};
+
+struct inv_pressure_data {
+    long meas;
+};
+
+struct inv_litefusion_data {
+    int got_no_motion_bias;
+    int acc_state;
+    unsigned long motion_duration;
+    unsigned short motion_state;
+    unsigned short last_motion;
+    long accel_lpf_gain;
+    long accel_lpf[3];
+    unsigned long poll_no_motion_time;
+    long no_motion_accel_threshold;
+    long no_motion_accel_sqrt_threshold;
+    unsigned long no_motion_accel_time;
+
+};
+
+struct inv_advfusion_data {
+    long compass_scale[3];
+    long compass_bias_error[3];
+    int got_compass_bias;
+    int compass_state;
+    int large_field;
+    int got_coarse_heading;
+    long prog_no_motion_bias[3];
+
+    long compass_correction[4];
+    long compass_disturb_correction[4];
+    long compass_correction_offset[4];
+    long local_field[3];
+    long new_local_field;
+    long sync_grav_body[3];
+    float sync_quat[4];
+    int gyro_bias_err; // prog no motion
+
+    double compass_prev_m[36];
+    double compass_prev_xty[6];
+
+    int compass_peaks[18];
+    int all_sensors_no_motion;
+
+    int got_init_compass_bias;
+    int resetting_compass;
+
+    int external_slave_library;
+    int compass_accuracy;
+    unsigned short biascalc_suspend;
+    inv_error_t (*mode_change_cb)(unsigned long, unsigned long);
+};
+
+struct inv_mag_data {
+    /* In compass mount frame, 2^16 = 1 uT */
+    long bias[3];
+    /* Scale Factor that is applied to the raw compass data. 1. = 2^30. In Mounting Frame */
+    long asa[3];
+    /* Scale Factor to convert raw compass data into uT * 2^16. Raw * 2^16 * sens / 2^30 = uT * 2^16 */
+    long sens;
+    unsigned char raw_data[24];
+    long sensor_data[3];
+    long calibrated_data[3];
+};
+
+struct inv_tempcomp_data {
+    int factory_temp_comp;
+    long temp_bias[3];
+    long temp_slope[3];
+
+    float x_gyro_coef[3];
+    float y_gyro_coef[3];
+    float z_gyro_coef[3];
+    float x_gyro_temp_data[BINS][PTS_PER_BIN];
+    float y_gyro_temp_data[BINS][PTS_PER_BIN];
+    float z_gyro_temp_data[BINS][PTS_PER_BIN];
+    float temp_data[BINS][PTS_PER_BIN];
+    int temp_ptrs[BINS];
+    long temp_valid_data[BINS];
+};
+
+struct inv_cal_params {
+    long accel[9];
+    long gyro[GYRO_NUM_AXES * GYRO_NUM_AXES];
+    long gyro_orient[GYRO_NUM_AXES * GYRO_NUM_AXES]; // straight back to pdata?
+    long compass[9];
+};
+
+struct inv_system_data {
+    int cal_loaded_flag;
+    unsigned short flags[7];
+    unsigned short interrupt_sources;
+};
+
+/**
+ *  struct inv_obj_t
+ *
+ *  Each member of inv_obj is a struct pointer.
+ *  ml_features.h contains the INV_FEATURE macros which
+ *  serve as contracts for the existence of pointees
+ *  for each pointer.
+ *  Each contract is described below.
+ *
+ */
 struct inv_obj_t {
-        //Calibration parameters
-        /* Raw sensor orientation */
-        long gyro_bias[3];
-        long accel_bias[3];
-        long compass_bias[3];
+    /* gyro is always non-null. */
+    struct inv_gyro_param       * gyro;
 
-        /* Cached values after orietnation is applied */
-        long scaled_gyro_bias[3];
-        long scaled_accel_bias[3];
-        long scaled_compass_bias[3];
+    /* accel is always non-null. */
+    struct inv_accel_param      * accel;
 
-        long compass_scale[3];
-        long compass_test_bias[3];
-        long compass_test_scale[3];
-        long compass_asa[3];
-        long compass_offsets[3];
+    /* mag is non-null iff INV_FEATURE_MAGNETOMETER */
+    struct inv_mag_data         * mag;
 
-        long compass_bias_error[3];
+    /* pressure is non-null iff INV_FEATURE_PRESSURE */
+    struct inv_pressure_data    * pressure;
 
-        long got_no_motion_bias;
-        long got_compass_bias;
-        long compass_state;
-        long large_field;
-        long acc_state;
+    /* gyro_tc is non-null iff INV_FEATURE_GYROTC_LEGACY */
+    struct inv_tempcomp_data    * gyro_tc;
 
-        long factory_temp_comp;
-        long got_coarse_heading;
-        long gyro_temp_bias[3];
-        long prog_no_motion_bias[3];
+    /* lite_fusion is always non-null. */
+    struct inv_litefusion_data  * lite_fusion;
 
-        long accel_cal[9];
-        // Deprecated, used gyro_orient
-        long gyro_cal[GYRO_NUM_AXES * GYRO_NUM_AXES];
-        long gyro_orient[GYRO_NUM_AXES * GYRO_NUM_AXES];
-        long accel_sens;
-        long compass_cal[9];
-        long gyro_sens;
-        long gyro_sf;
-        long temp_slope[GYRO_NUM_AXES];
-        long compass_sens;
-        long temp_offset[GYRO_NUM_AXES];
+    /* adv_fusion is non-null iff INV_FEATURE_ADVFUSION */
+    struct inv_advfusion_data   * adv_fusion;
 
-        int cal_loaded_flag;
+    /* calmat is non-null iff INV_FEATURE_CALMATS */
+    struct inv_cal_params       * calmat;
 
-        /* temperature compensation */
-        float x_gyro_coef[3];
-        float y_gyro_coef[3];
-        float z_gyro_coef[3];
-        float x_gyro_temp_data[BINS][PTS_PER_BIN];
-        float y_gyro_temp_data[BINS][PTS_PER_BIN];
-        float z_gyro_temp_data[BINS][PTS_PER_BIN];
-        float temp_data[BINS][PTS_PER_BIN];
-        int temp_ptrs[BINS];
-        long temp_valid_data[BINS];
-
-        long compass_correction[4];
-        long compass_correction_relative[4];
-        long compass_disturb_correction[4];
-        long compass_correction_offset[4];
-        long relative_quat[4];
-        long local_field[3];
-        long new_local_field;
-        long sync_grav_body[3];
-        int gyro_bias_err;
-
-        double compass_bias_ptr[9];
-        double compass_bias_v[3];
-        double compass_prev_m[36];
-        double compass_prev_xty[6];
-
-        int compass_peaks[18];
-        int all_sensors_no_motion;
-
-        long init_compass_bias[3];
-
-        int got_init_compass_bias;
-        int resetting_compass;
-
-        long ang_v_body[GYRO_NUM_AXES];
-        unsigned char compass_raw_data[24]; /* Sensor data plus status etc */
-        long compass_sensor_data[3]; /* Raw sensor data only */
-        long compass_calibrated_data[3];
-        long compass_test_calibrated_data[3];
-        long pressure;
-        inv_error_t (*external_slave_callback)(struct inv_obj_t *);
-        int  compass_accuracy;
-        int compass_overunder;
-
-        unsigned short flags[8];
-        unsigned short suspend;
-
-        long no_motion_threshold;
-        unsigned long motion_duration;
-
-        unsigned short motion_state;
-
-        unsigned short data_mode;
-        unsigned short interrupt_sources;
-
-        unsigned short bias_update_time;
-        short last_motion;
-        unsigned short bias_calc_time;
-
-        unsigned char internal_motion_state;
-        long start_time;
-
-        long accel_lpf_gain;
-        long accel_lpf[3];
-        unsigned long poll_no_motion;
-        long no_motion_accel_threshold;
-        unsigned long no_motion_accel_time;
-        inv_error_t(*mode_change_func) (unsigned long, unsigned long);
-    };
+    /* sys is non-null iff INV_FEATURE_SYSSTRUCT */
+    struct inv_system_data      * sys;
+};
 
     typedef inv_error_t(*inv_obj_func) (struct inv_obj_t *);
 
@@ -416,10 +426,6 @@ struct inv_obj_t {
     /* --------------------- */
 
     struct inv_params_obj {
-
-        unsigned short bias_mode;   // A function or bitwise OR of functions that determine how the gyroscope bias will be automatically updated.
-        // Functions include INV_BIAS_FROM_NO_MOTION, INV_BIAS_FROM_GRAVITY, and INV_BIAS_FROM_TEMPERATURE.
-        // The engine INV_BIAS_UPDATE must be enabled for these algorithms to run.
 
         unsigned short orientation_mask;    // Allows a user to register which orientations will trigger the user defined callback function.
         // The orientations are INV_X_UP, INV_X_DOWN, INV_Y_UP, INV_Y_DOWN, INV_Z_UP, and INV_Z_DOWN.
@@ -453,15 +459,15 @@ struct inv_obj_t {
     /*API for handling polling */
     int inv_check_flag(int flag);
 
-    /*API for setting bias update function */
-    inv_error_t inv_set_bias_update(unsigned short biasFunction);
+    /*API for enabling/disabling bias trackers */
+    inv_error_t inv_enable_bias_from_LPF(int check_compass);
+    inv_error_t inv_disable_bias_from_LPF(void);
+    inv_error_t inv_enable_bias_from_gravity(int check_compass);
+    inv_error_t inv_disable_bias_from_gravity(void);
+    inv_error_t inv_set_dead_zone_zero(void);
+    inv_error_t inv_set_dead_zone_normal(int check_compass);
+    inv_error_t inv_set_dead_zone_high(void);
 
-#if defined CONFIG_MPU_SENSORS_MPU6050A2 || \
-    defined CONFIG_MPU_SENSORS_MPU6050B1
-    inv_error_t inv_turn_on_bias_from_no_motion(void);
-    inv_error_t inv_turn_off_bias_from_no_motion(void);
-    inv_error_t inv_set_mpu_6050_config(void);
-#endif
 
     /* Legacy functions for handling augmented data*/
     inv_error_t inv_get_array(int dataSet, long *data);
@@ -470,85 +476,30 @@ struct inv_obj_t {
     inv_error_t inv_set_float_array(int dataSet, float *data);
     /* Individual functions for augmented data, per specific dataset */
 
-
-    inv_error_t inv_get_gyro(long *data);
-    inv_error_t inv_get_accel(long *data);
-    inv_error_t inv_get_temperature(long *data);
-    inv_error_t inv_get_temperature_raw(short *data);
-    inv_error_t inv_get_rot_mat(long *data);
-    inv_error_t inv_get_quaternion(long *data);
-    inv_error_t inv_get_linear_accel(long *data);
-    inv_error_t inv_get_linear_accel_in_world(long *data);
-    inv_error_t inv_get_gravity(long *data);
-    inv_error_t inv_get_angular_velocity(long *data);
-    inv_error_t inv_get_euler_angles(long *data);
-    inv_error_t inv_get_euler_angles_x(long *data);
-    inv_error_t inv_get_euler_angles_y(long *data);
-    inv_error_t inv_get_euler_angles_z(long *data);
-    inv_error_t inv_get_gyro_temp_slope(long *data);
-    inv_error_t inv_get_gyro_bias(long *data);
-    inv_error_t inv_get_accel_bias(long *data);
-    inv_error_t inv_get_mag_bias(long *data);
-    inv_error_t inv_get_gyro_and_accel_sensor(long *data);
-    inv_error_t inv_get_mag_raw_data(long *data);
-    inv_error_t inv_get_magnetometer(long *data);
-    inv_error_t inv_get_pressure(long *data);
-    inv_error_t inv_get_heading(long *data);
-    inv_error_t inv_get_gyro_cal_matrix(long *data);
-    inv_error_t inv_get_accel_cal_matrix(long *data);
-    inv_error_t inv_get_mag_cal_matrix(long *data);
-    inv_error_t inv_get_mag_bias_error(long *data);
-    inv_error_t inv_get_mag_scale(long *data);
-    inv_error_t inv_get_local_field(long *data);
-    inv_error_t inv_get_relative_quaternion(long *data);
-    inv_error_t inv_get_gyro_float(float *data);
-    inv_error_t inv_get_accel_float(float *data);
-    inv_error_t inv_get_temperature_float(float *data);
-    inv_error_t inv_get_rot_mat_float(float *data);
-    inv_error_t inv_get_quaternion_float(float *data);
-    inv_error_t inv_get_linear_accel_float(float *data);
-    inv_error_t inv_get_linear_accel_in_world_float(float *data);
-    inv_error_t inv_get_gravity_float(float *data);
-    inv_error_t inv_get_angular_velocity_float(float *data);
-    inv_error_t inv_get_euler_angles_float(float *data);
-    inv_error_t inv_get_euler_angles_x_float(float *data);
-    inv_error_t inv_get_euler_angles_y_float(float *data);
-    inv_error_t inv_get_euler_angles_z_float(float *data);
-    inv_error_t inv_get_gyro_temp_slope_float(float *data);
-    inv_error_t inv_get_gyro_bias_float(float *data);
-    inv_error_t inv_get_accel_bias_float(float *data);
-    inv_error_t inv_get_mag_bias_float(float *data);
-    inv_error_t inv_get_gyro_and_accel_sensor_float(float *data);
-    inv_error_t inv_get_mag_raw_data_float(float *data);
-    inv_error_t inv_get_magnetometer_float(float *data);
-    inv_error_t inv_get_pressure_float(float *data);
-    inv_error_t inv_get_heading_float(float *data);
-    inv_error_t inv_get_gyro_cal_matrix_float(float *data);
-    inv_error_t inv_get_accel_cal_matrix_float(float *data);
-    inv_error_t inv_get_mag_cal_matrix_float(float *data);
-    inv_error_t inv_get_mag_bias_error_float(float *data);
-    inv_error_t inv_get_mag_scale_float(float *data);
-    inv_error_t inv_get_local_field_float(float *data);
-    inv_error_t inv_get_relative_quaternion_float(float *data);
-    inv_error_t inv_get_compass_accuracy(int *accuracy);
-    inv_error_t inv_set_gyro_bias(long *data);
-    inv_error_t inv_set_accel_bias(long *data);
-    inv_error_t inv_set_mag_bias(long *data);
-    inv_error_t inv_set_gyro_temp_slope(long *data);
-    inv_error_t inv_set_local_field(long *data);
-    inv_error_t inv_set_mag_scale(long *data);
-    inv_error_t inv_set_gyro_temp_slope_float(float *data);
-    inv_error_t inv_set_gyro_bias_float(float *data);
-    inv_error_t inv_set_accel_bias_float(float *data);
-    inv_error_t inv_set_mag_bias_float(float *data);
-    inv_error_t inv_set_local_field_float(float *data);
-    inv_error_t inv_set_mag_scale_float(float *data);
+/* Select which mlarray features are available :
+ * ml_lite.h is always included. It contains mlarray functions
+ * which depend only on inv_obj->lite_fusion.
+ */
+#include "ml_lite.h"
+/* ml_adv contains mlarray functions which depend on
+ * inv_obj->adv_fusion.
+ * It is excluded when INV_FEATURE_ADVFUSION is not defined.
+ */
+#ifdef INV_FEATURE_ADVFUSION
+#include "ml_adv.h"
+#endif
 
     inv_error_t inv_apply_endian_accel(void);
     inv_error_t inv_apply_calibration(void);
-    inv_error_t inv_set_gyro_calibration(float range, signed char *orientation);
-    inv_error_t inv_set_accel_calibration(float range,
-                                          signed char *orientation);
+
+    inv_error_t inv_gyro_var_cal();
+    inv_error_t inv_gyro_dmp_cal();
+    void inv_set_accel_mounting(signed char *mount);
+    inv_error_t inv_accel_var_cal();
+    inv_error_t inv_accel_dmp_cal();
+
+    unsigned short inv_orientation_matrix_to_scalar(const signed char *mtx);
+
     inv_error_t inv_set_compass_calibration(float range,
                                             signed char *orientation);
 
@@ -562,6 +513,7 @@ struct inv_obj_t {
 
     inv_error_t inv_set_motion_interrupt(unsigned char on);
     inv_error_t inv_set_fifo_interrupt(unsigned char on);
+    inv_error_t inv_set_dmp_dr_interrupt(unsigned char on);
 
     int inv_get_interrupts(void);
 
@@ -574,12 +526,14 @@ struct inv_obj_t {
     inv_error_t inv_reset_motion(void);
 
     inv_error_t inv_update_bias(void);
-    inv_error_t inv_set_dead_zone(void);
     void inv_start_bias_calc(void);
     void inv_stop_bias_calc(void);
-
+    
     // Private functions shared accross modules
     void inv_init_ml(void);
+	void inv_init_ml_cb(void);
+
+	inv_error_t inv_read_compass_asa( long * asa );
 
     inv_error_t inv_register_dmp_interupt_cb(inv_obj_func func);
     inv_error_t inv_unregister_dmp_interupt_cb(inv_obj_func func);
@@ -591,6 +545,7 @@ struct inv_obj_t {
 }
 #endif
 #endif                          // INV_H
+
 /**
  * @}
  */

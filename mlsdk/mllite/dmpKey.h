@@ -1,19 +1,7 @@
 /*
  $License:
-   Copyright 2011 InvenSense, Inc.
-
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
-
- http://www.apache.org/licenses/LICENSE-2.0
-
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
-  $
+    Copyright (C) 2011 InvenSense Corporation, All Rights Reserved.
+ $
  */
 #ifndef DMPKEY_H__
 #define DMPKEY_H__
@@ -33,7 +21,8 @@
 #define KEY_CFG_TAP3               (KEY_CFG_TAP2+1)
 #define KEY_CFG_TAP_QUANTIZE       (KEY_CFG_TAP3+1)
 #define KEY_CFG_TAP_JERK           (KEY_CFG_TAP_QUANTIZE+1)
-#define KEY_CFG_TAP_SAVE_ACCB      (KEY_CFG_TAP_JERK+1)
+#define KEY_CFG_DR_INT             (KEY_CFG_TAP_JERK+1)
+#define KEY_CFG_TAP_SAVE_ACCB      (KEY_CFG_DR_INT+1)
 #define KEY_CFG_TAP_CLEAR_STICKY   (KEY_CFG_TAP_SAVE_ACCB+1)
 #define KEY_FCFG_ACCEL_INPUT       (KEY_CFG_TAP_CLEAR_STICKY +1)
 #define KEY_FCFG_ACCEL_INIT        (KEY_FCFG_ACCEL_INPUT+1)
@@ -101,7 +90,8 @@
 #define KEY_D_1_92                 (KEY_D_1_28+1)
 #define KEY_D_1_96                 (KEY_D_1_92+1)
 #define KEY_D_1_98                 (KEY_D_1_96+1)
-#define KEY_D_1_106                (KEY_D_1_98+1)
+#define KEY_D_1_100                (KEY_D_1_98+1)
+#define KEY_D_1_106                (KEY_D_1_100+1)
 #define KEY_D_1_108                (KEY_D_1_106+1)
 #define KEY_D_1_112                (KEY_D_1_108+1)
 #define KEY_D_1_128                (KEY_D_1_112+1)
@@ -111,11 +101,15 @@
 #define KEY_D_1_178                (KEY_D_1_175+1)
 #define KEY_D_1_179                (KEY_D_1_178+1)
 #define KEY_D_1_236                (KEY_D_1_179+1)
-#define KEY_D_1_244                (KEY_D_1_236+1)
+#define KEY_D_1_240                (KEY_D_1_236+1)
+#define KEY_D_1_244                (KEY_D_1_240+1)
 #define KEY_D_2_12                 (KEY_D_1_244+1)
 #define KEY_D_2_96                 (KEY_D_2_12+1)
 #define KEY_D_2_108                (KEY_D_2_96+1)
-#define KEY_D_2_244                (KEY_D_2_108+1)
+#define KEY_D_2_208                (KEY_D_2_108+1)
+#define KEY_D_2_224                (KEY_D_2_208+1)
+#define KEY_D_2_236                (KEY_D_2_224+1)
+#define KEY_D_2_244                (KEY_D_2_236+1)
 #define KEY_D_2_248                (KEY_D_2_244+1)
 #define KEY_D_2_252                (KEY_D_2_248+1)
 
@@ -133,7 +127,7 @@
 #define KEY_CPASS_MTX_21            (KEY_CPASS_MTX_20+1)
 #define KEY_CPASS_MTX_22            (KEY_CPASS_MTX_21+1)
 
-// Mantis Keys
+// MPU6050 Keys
 #define KEY_CFG_MOTION_BIAS         (KEY_CPASS_MTX_22+1)
 
 #define KEY_DMP_TAPW_MIN           (KEY_CFG_MOTION_BIAS+1)
@@ -212,6 +206,7 @@
 #define KEY_STREAM_P_ACCEL_X       (KEY_STREAM_P_ACCEL_Y+1)
 #define KEY_STREAM_P_FOOTER        (KEY_STREAM_P_ACCEL_X+1)
 #define KEY_STREAM_P_ACCEL_Z       (KEY_STREAM_P_FOOTER+1)
+
 
 #define NUM_KEYS (KEY_STREAM_P_ACCEL_Z+1)
 
@@ -372,7 +367,8 @@
 #define DINC7A 0x7a
 #define DINC7B 0x7b
 
-#if defined CONFIG_MPU_SENSORS_MPU3050
+#define DIND40 0x40
+
 #define DINA80 0x80
 #define DINA90 0x90
 #define DINAA0 0xa0
@@ -394,39 +390,7 @@
 #define DINAC3 0xc3
 #define DINAC4 0xc4
 #define DINAC5 0xc5
-#elif defined CONFIG_MPU_SENSORS_MPU6050A2 || \
-	defined CONFIG_MPU_SENSORS_MPU6050B1
 
-#define DINA80 0x80
-#define DINA90 0x90
-#define DINAA0 0xa0
-#define DINAC9 0xc9
-#define DINACB 0xcb
-#define DINACD 0xcd
-#define DINACF 0xcf
-#define DINAC8 0xc8
-#define DINACA 0xca
-#define DINACC 0xcc
-#define DINACE 0xce
-#define DINAD8 0xd8
-#define DINADD 0xdd
-#define DINAF8 0xf0
-#define DINAFE 0xfe
-
-#define DINBF8 0xf8
-#define DINAC0 0xb0
-#define DINAC1 0xb1
-#define DINAC2 0xb4
-#define DINAC3 0xb5
-#define DINAC4 0xb8
-#define DINAC5 0xb9
-#define DINBC0 0xc0
-#define DINBC2 0xc2
-#define DINBC4 0xc4
-#define DINBC6 0xc6
-#else
-#error No CONFIG_MPU_SENSORS_xxxx has been defined.
-#endif
 
 
 #endif // DMPKEY_H__

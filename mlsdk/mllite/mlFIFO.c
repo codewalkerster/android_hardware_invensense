@@ -1,47 +1,27 @@
 /*
  $License:
-   Copyright 2011 InvenSense, Inc.
-
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
-
- http://www.apache.org/licenses/LICENSE-2.0
-
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
-  $
+    Copyright (C) 2011 InvenSense Corporation, All Rights Reserved.
+ $
  */
 /*******************************************************************************
  *
- * $Id: mlFIFO.c 5653 2011-06-16 21:06:55Z nroyer $
+ * $Id: mlFIFO.c 6204 2011-10-15 00:38:33Z mcaramello $
  *
- *******************************************************************************/
+ ******************************************************************************/
 
 /**
- *   @defgroup MLFIFO
- *   @brief Motion Library - FIFO Driver.
- *          The FIFO API Interface.
+ *   @defgroup  MLFIFO
+ *   @brief     Motion Library - FIFO Driver.
+ *              The FIFO API interface.
  *
  *   @{
  *       @file mlFIFO.c
  *       @brief FIFO Interface.
-**/
+ */
 
 #include <string.h>
 #include "mpu.h"
-#if defined CONFIG_MPU_SENSORS_MPU6050A2
-#    include "mpu6050a2.h"
-#elif defined CONFIG_MPU_SENSORS_MPU6050B1
-#    include "mpu6050b1.h"
-#elif defined CONFIG_MPU_SENSORS_MPU3050
-#  include "mpu3050.h"
-#else
-#error Invalid or undefined CONFIG_MPU_SENSORS_MPUxxxx
-#endif
+#include "mpu3050.h"
 #include "mlFIFO.h"
 #include "mlFIFOHW.h"
 #include "dmpKey.h"
@@ -54,13 +34,16 @@
 #include "mlos.h"
 #include "mlmath.h"
 #include "accel.h"
+#include "compass.h"
 
 #include "log.h"
 #undef MPL_LOG_TAG
 #define MPL_LOG_TAG "MPL-fifo"
 
-#define FIFO_DEBUG 0
+#undef  MPL_LOG_NDEBUG
+#define MPL_LOG_NDEBUG 1 /* Use 0 to turn on MPL_LOGV output */
 
+/* position of the first of each element in the stream */
 #define REF_QUATERNION             (0)
 #define REF_GYROS                  (REF_QUATERNION + 4)
 #define REF_CONTROL                (REF_GYROS + 3)
@@ -74,23 +57,24 @@
 #define REF_GARBAGE                (REF_DMP_PACKET + 1)
 #define REF_LAST                   (REF_GARBAGE + 1)
 
+/* scaling for each element in the data set */
 long fifo_scale[REF_LAST] = {
-    (1L << 30), (1L << 30), (1L << 30), (1L << 30), // Quaternion
+    (1L << 30), (1L << 30), (1L << 30), (1L << 30),     // Quaternion
     // 2^(16+30)/((2^30)*((3.14159265358/180)/200)/2)
-    1501974482L, 1501974482L, 1501974482L,  // Gyro
-    (1L << 30), (1L << 30), (1L << 30), (1L << 30), // Control
-    (1L << 14),                 // Temperature
-    (1L << 14), (1L << 14), (1L << 14), // Raw Gyro
-    (1L << 14), (1L << 14), (1L << 14), (0),    // Raw Accel, plus padding
-    (1L << 14), (1L << 14), (1L << 14), // Raw External
-    (1L << 14), (1L << 14), (1L << 14), // Raw External
-    (1L << 16), (1L << 16), (1L << 16), // Accel
-    (1L << 30), (1L << 30), (1L << 30), (1L << 30), // Quant Accel
-    (1L << 30), (1L << 30), (1L << 30), (1L << 30), //Quant Accel
-    (1L << 30), (1L << 30), (1L << 30), (1L << 30), // Quaternion 6 Axis
-    (1L << 30), (1L << 30), (1L << 30), // EIS
-    (1L << 30),                 // Packet
-    (1L << 30),                 // Garbage
+    1501974482L, 1501974482L, 1501974482L,              // Gyro
+    (1L << 30), (1L << 30), (1L << 30), (1L << 30),     // Control
+    (1L << 14),                                         // Temperature
+    (1L << 14), (1L << 14), (1L << 14),                 // Raw Gyro
+    (1L << 14), (1L << 14), (1L << 14), (0),            // Raw Accel, plus padding
+    (1L << 14), (1L << 14), (1L << 14),                 // Raw External
+    (1L << 14), (1L << 14), (1L << 14),                 // Raw External
+    (1L << 16), (1L << 16), (1L << 16),                 // Accel
+    (1L << 30), (1L << 30), (1L << 30), (1L << 30),     // Quant Accel
+    (1L << 30), (1L << 30), (1L << 30), (1L << 30),     // Quant Accel
+    (1L << 30), (1L << 30), (1L << 30), (1L << 30),     // Quaternion 6 Axis
+    (1L << 30), (1L << 30), (1L << 30),                 // EIS
+    (1L << 30),                                         // Packet
+    (1L << 30),                                         // Garbage
 };
 
 // The scale factors for tap need to match the number in fifo_scale above.
@@ -112,6 +96,7 @@ long fifo_scale[REF_LAST] = {
 #define CONFIG_FOOTER              (CONFIG_DMP_PACKET_NUMBER + 1)
 #define NUMFIFOELEMENTS            (CONFIG_FOOTER + 1)
 
+/* offset to the location of the data set in the fifo data */
 const int fifo_base_offset[NUMFIFOELEMENTS] = {
     REF_QUATERNION * 4,
     REF_GYROS * 4,
@@ -142,7 +127,6 @@ struct fifo_obj {
     float acc_filter_coef;
     long gravity_cache[3];
 };
-
 static struct fifo_obj fifo_obj;
 
 #define FIFO_CACHE_TEMPERATURE 1
@@ -150,17 +134,16 @@ static struct fifo_obj fifo_obj;
 #define FIFO_CACHE_GRAVITY_BODY 4
 #define FIFO_CACHE_ACC_BIAS 8
 
-struct fifo_rate_obj {
-    // These describe callbacks happening everytime a FIFO block is processed
+struct fifo_rate_obj_t {
+    /* These describe callbacks happening everytime a FIFO block is processed */
     int_fast8_t num_cb;
     HANDLE mutex;
     inv_obj_func fifo_process_cb[MAX_HIGH_RATE_PROCESSES];
     int priority[MAX_HIGH_RATE_PROCESSES];
 };
+struct fifo_rate_obj_t fifo_rate_obj;
 
-struct fifo_rate_obj fifo_rate_obj;
-
-/** Sets accuracy to be one of 0, INV_32_BIT, or INV_16_BIT. Looks up old 
+/** Sets accuracy to be one of 0, INV_32_BIT, or INV_16_BIT. Looks up old
  *  accuracy if needed.
  */
 static uint_fast16_t inv_set_fifo_accuracy(uint_fast16_t elements,
@@ -184,7 +167,7 @@ static uint_fast16_t inv_set_fifo_accuracy(uint_fast16_t elements,
     return accuracy;
 }
 
-/** Adjusts (len) Reference Counts, at offset (refOffset). If increment is 0, 
+/** Adjusts (len) Reference Counts, at offset (refOffset). If increment is 0,
  * the reference counts are subtracted, otherwise they are incremented for each
  * bit set in element. The value returned are the elements that should be sent
  * out as data through the FIFO.
@@ -253,7 +236,7 @@ static inv_error_t inv_construct3_fifo(unsigned char *regs,
     return result;
 }
 
-/** 
+/**
  * @internal
  * Puts footer on FIFO data.
  */
@@ -267,16 +250,22 @@ static inv_error_t inv_set_footer(void)
     int *fifo_offsets_ptr = fifo_obj.offsets;
 
     fifo_obj.fifo_packet_size = 0;
-    for (i = 0; i < NUMFIFOELEMENTS; i++) {
+    for (i = 0; i < NUMFIFOELEMENTS; i++) { /* data sets */
         tmp_count = 0;
         offset = fifo_base_offset[i];
-        for (j = 0; j < 8; j++) {
+        for (j = 0; j < 8; j++) {   /* elements in the data sets */            /* FIXME : hardcoded */
             if ((fifo_obj.data_config[i] >> j) & 0x0001) {
 #ifndef BIG_ENDIAN
-                // Special Case for Byte Ordering on Accel Data
-                if ((i == CONFIG_RAW_DATA) && (j > 2)) {
+                struct mldl_cfg *mldl_cfg = inv_get_dl_config();
+                int accel_endian = EXT_SLAVE_BIG_ENDIAN;
+                if (mldl_cfg->slave[EXT_SLAVE_TYPE_ACCEL])
+                    accel_endian =
+                        mldl_cfg->slave[EXT_SLAVE_TYPE_ACCEL]->endian;
+
+                /* special case for byte ordering on accel data */
+                if ((i == CONFIG_RAW_DATA) && (j >= 3)) {
                     tmp_count += 2;
-                    switch (inv_get_dl_config()->accel->endian) {
+                    switch (accel_endian) {
                     case EXT_SLAVE_BIG_ENDIAN:
                         *fifo_offsets_ptr++ = offset + 3;
                         *fifo_offsets_ptr++ = offset + 2;
@@ -329,12 +318,17 @@ static inv_error_t inv_set_footer(void)
                         tmp_count += 2;
                     }
                 }
-#else
-                // Big Endian Platform
-                // Special Case for Byte Ordering on Accel Data
-                if ((i == CONFIG_RAW_DATA) && (j > 2)) {
+                
+#else           /* Big Endian platform */
+                /* special case for byte ordering on accel data */
+                if ((i == CONFIG_RAW_DATA) && (j >= 3)) {
+                    struct mldl_cfg *mldl_cfg = inv_get_dl_config();
+                    int accel_endian = EXT_SLAVE_BIG_ENDIAN;
+                    if (mldl_cfg->slave[EXT_SLAVE_TYPE_ACCEL])
+                        accel_endian =
+                            mldl_cfg->slave[EXT_SLAVE_TYPE_ACCEL]->endian;
                     tmp_count += 2;
-                    switch (inv_get_dl_config()->accel->endian) {
+                    switch (accel_endian) {
                     case EXT_SLAVE_BIG_ENDIAN:
                         *fifo_offsets_ptr++ = offset + 2;
                         *fifo_offsets_ptr++ = offset + 3;
@@ -387,7 +381,6 @@ static inv_error_t inv_set_footer(void)
                         tmp_count += 2;
                     }
                 }
-
 #endif
             }
             offset += 4;
@@ -441,7 +434,7 @@ inv_error_t inv_decode_quantized_accel(void)
         } value;
 
         value.u32 = fifo_obj.decoded[REF_QUANT_ACCEL + kk];
-        // unquantize this samples.  
+        // unquantize this samples.
         // They are stored as x * 2^20 + y * 2^10 + z
         // Z
         temp.u10 = value.u32 & 0x3ff;
@@ -467,11 +460,11 @@ static inv_error_t inv_state_change_fifo(unsigned char newState)
     struct mldl_cfg *mldl_cfg = inv_get_dl_config();
 
     /* Don't reset the fifo on a fifo rate change */
-    if ((mldl_cfg->requested_sensors & INV_DMP_PROCESSOR) &&
+    if ((mldl_cfg->inv_mpu_cfg->requested_sensors & INV_DMP_PROCESSOR) &&
         (newState != inv_get_state()) && (inv_dmpkey_supported(KEY_D_1_178))) {
         /* Delay output on restart by 50ms due to warm up time of gyros */
-
-        short delay = (short)-((50 / inv_get_sample_step_size_ms()) + 1);
+        short delay = (short)(-1 -
+            (50000L / inv_mpu_get_sampling_period_us(mldl_cfg->mpu_gyro_cfg)));
         inv_init_fifo_hardare();
         inv_int16_to_big8(delay, regs);
         result = inv_set_mpu_memory(KEY_D_1_178, 2, regs);
@@ -514,21 +507,22 @@ uint_fast16_t inv_get_fifo_packet_size(void)
 }
 
 /**
- *  @brief  Initializes all the internal static variables for 
+ *  @brief  Initializes all the internal static variables for
  *          the FIFO module.
- *  @note   Should be called by the initialization routine such 
+ *  @note   Should be called by the initialization routine such
  *          as inv_dmp_open().
- *  @return INV_SUCCESS if successful, a non-zero error code otherwise. 
+ *  @return INV_SUCCESS if successful, a non-zero error code otherwise.
  */
 inv_error_t inv_init_fifo_param(void)
 {
     inv_error_t result;
     memset(&fifo_obj, 0, sizeof(struct fifo_obj));
+    fifo_obj.gyro_source = 0xff;
     fifo_obj.decoded[REF_QUATERNION] = 1073741824L; // Set to Identity
     inv_set_linear_accel_filter_coef(0.f);
     fifo_obj.fifo_rate = 20;
     fifo_obj.sample_step_size_ms = 100;
-    memset(&fifo_rate_obj, 0, sizeof(struct fifo_rate_obj));
+    memset(&fifo_rate_obj, 0, sizeof(struct fifo_rate_obj_t));
     result = inv_create_mutex(&fifo_rate_obj.mutex);
     if (result) {
         LOG_RESULT_LOCATION(result);
@@ -554,33 +548,102 @@ inv_error_t inv_close_fifo(void)
     ERROR_CHECK_FIRST(first, result);
     result = inv_destroy_mutex(fifo_rate_obj.mutex);
     ERROR_CHECK_FIRST(first, result);
-    memset(&fifo_rate_obj, 0, sizeof(struct fifo_rate_obj));
+    memset(&fifo_rate_obj, 0, sizeof(struct fifo_rate_obj_t));
     return first;
 }
 
-/** 
+/**
  * Set the gyro source to output to the fifo
- * 
- * @param source The source.  One of 
+ *
+ * @param source The source.  One of
  * - INV_GYRO_FROM_RAW
  * - INV_GYRO_FROM_QUATERNION
- * 
+ *
  * @return INV_SUCCESS or non-zero error code;
  */
 inv_error_t inv_set_gyro_data_source(uint_fast8_t source)
 {
+    INVENSENSE_FUNC_START;
+    unsigned char regs[5];
+    inv_error_t result;
+    uint_fast16_t elements;
+    int kk;
+
     if (source != INV_GYRO_FROM_QUATERNION && source != INV_GYRO_FROM_RAW) {
         return INV_ERROR_INVALID_PARAMETER;
     }
 
-    fifo_obj.gyro_source = source;
+    if (inv_get_state() < INV_STATE_DMP_OPENED)
+        return INV_ERROR_SM_IMPROPER_STATE;
+
+    if (source != fifo_obj.gyro_source) {
+        fifo_obj.gyro_source = source;
+        if (fifo_obj.gyro_source == INV_GYRO_FROM_QUATERNION) {
+            regs[0] = DINA90 + 5;
+            regs[1] = DINAF8 + 1;
+            regs[2] = DINA20;
+            regs[3] = DINA28; 
+            regs[4] = DINA30;
+        } else if (fifo_obj.gyro_source == INV_GYRO_FROM_RAW) {
+            regs[0] = DINA90 + 10;
+            regs[1] = DINAF8 + 1;
+            regs[2] = DINA28;
+            regs[3] = DINA30;
+            regs[4] = DINA38;
+        }
+
+        elements = fifo_obj.data_config[CONFIG_GYROS];
+        if (elements & INV_16_BIT) {
+            regs[1] = DINAF8 + 2;
+        }
+        // Turns off each axis if not enabled
+        for (kk = 0; kk < 3; ++kk) {
+            if ((elements & 1) == 0)
+                regs[kk + 2] = DINAA0 + 3;
+            elements >>= 1;
+        }
+
+        result = inv_set_mpu_memory(KEY_CFG_GYRO_SOURCE, 5, regs);
+        if (result) {
+            LOG_RESULT_LOCATION(result);
+            return result;
+        }
+    }
+
     return INV_SUCCESS;
 }
 
-/** 
+/*
+        Convenience function to print the data coming out of the fifo
+*/ 
+void print_debug_dmp_output(unsigned char *dmp_pkt, uint_fast16_t nbytes)
+{
+    char strout[MAX_FIFO_LENGTH * 2 + 10];
+    int ii;
+	
+    strncpy(strout, "    : ", strlen("    : ") + 1);
+    for (ii = 0; ii < nbytes; ii++)
+        if (ii % 10 == 0) {
+            char dec[5]; 
+            snprintf(dec, strlen("  ") + 1, "%-2d", ii / 10);
+            strncat(strout, dec, strlen(dec) + 1);
+        } else 
+            strncat(strout, "  ", strlen("  ") + 1);
+    MPL_LOGV("%s\n", strout);
+    
+    strncpy(strout, "DMP : ", 7);
+    for (ii = 0; ii < nbytes; ii++) {
+        char dec[5]; 
+        snprintf(dec, strlen("  ") + 1, "%02x", dmp_pkt[ii]);
+        strncat(strout, dec, strlen(dec) + 1);
+    }
+    MPL_LOGV("%s --- %d\n", strout, nbytes);
+}
+
+/**
  *  @brief  Reads and processes FIFO data. Also handles callbacks when data is
  *          ready.
- *  @param  numPackets 
+ *  @param  numPackets
  *              Number of FIFO packets to try to read. You should
  *              use a large number here, such as 100, if you want to read all
  *              the full packets in the FIFO, which is typical operation.
@@ -606,10 +669,10 @@ inv_error_t inv_read_and_process_fifo(int_fast8_t numPackets,
         return result;          // Nothing to read
 
     for (packet = 0; packet < numPackets; ++packet) {
-        if (mldl_cfg->requested_sensors & INV_DMP_PROCESSOR) {
+        if (mldl_cfg->inv_mpu_cfg->requested_sensors & INV_DMP_PROCESSOR) {
             unsigned char footer_n_data[MAX_FIFO_LENGTH + FIFO_FOOTER_SIZE];
             unsigned char *buf = &footer_n_data[FIFO_FOOTER_SIZE];
-            read = inv_get_fifo((uint_fast16_t) fifo_obj.fifo_packet_size,
+            read = inv_get_fifo((uint_fast16_t)fifo_obj.fifo_packet_size,
                                 footer_n_data);
             if (0 == read ||
                 read != fifo_obj.fifo_packet_size - FIFO_FOOTER_SIZE) {
@@ -619,10 +682,15 @@ inv_error_t inv_read_and_process_fifo(int_fast8_t numPackets,
                 }
                 return result;
             }
-
+            if (!MPL_LOG_NDEBUG)
+                print_debug_dmp_output(buf, read);
             result = inv_process_fifo_packet(buf);
             if (result) {
                 LOG_RESULT_LOCATION(result);
+                if (result == INV_WARNING_QUAT_TRASHED) {
+                    memset(fifo_obj.decoded, 0, sizeof(fifo_obj.decoded));
+                    result = inv_reset_fifo();
+                }
                 return result;
             }
         } else if (inv_accel_present()) {
@@ -645,7 +713,7 @@ inv_error_t inv_read_and_process_fifo(int_fast8_t numPackets,
                 fifo_obj.decoded[REF_ACCEL + kk] =
                     inv_q30_mult((data[kk] << 15), fifo_scale[REF_ACCEL + kk]);
                 fifo_obj.decoded[REF_ACCEL + kk] -=
-                    inv_obj.scaled_accel_bias[kk];
+                    inv_obj.accel->scaled_bias[kk];
             }
         }
         // The buffer was processed correctly, so increment even if
@@ -655,14 +723,6 @@ inv_error_t inv_read_and_process_fifo(int_fast8_t numPackets,
         if ((fifo_obj.fifo_rate < INV_MAX_NUM_ACCEL_SAMPLES) &&
             fifo_obj.data_config[CONFIG_DMP_QUANT_ACCEL]) {
             result = inv_decode_quantized_accel();
-            if (result) {
-                LOG_RESULT_LOCATION(result);
-                return result;
-            }
-        }
-
-        if (fifo_obj.data_config[CONFIG_QUAT]) {
-            result = inv_accel_compass_supervisor();
             if (result) {
                 LOG_RESULT_LOCATION(result);
                 return result;
@@ -690,15 +750,15 @@ inv_error_t inv_read_and_process_fifo(int_fast8_t numPackets,
  *  @brief  inv_set_fifo_processed_callback is used to set a processed data callback
  *          function.  inv_set_fifo_processed_callback sets a user defined callback
  *          function that triggers when all the decoding has been finished by
- *          the motion processing engines. It is called before other bigger 
+ *          the motion processing engines. It is called before other bigger
  *          processing engines to allow lower latency for the user.
  *
- *  @pre    inv_dmp_open() 
- *          @ifnot MPL_MF 
- *              or inv_open_low_power_pedometer() 
+ *  @pre    inv_dmp_open()
+ *          @ifnot MPL_MF
+ *              or inv_open_low_power_pedometer()
  *              or inv_eis_open_dmp()
  *          @endif
- *          and inv_dmp_start() 
+ *          and inv_dmp_start()
  *          must <b>NOT</b> have been called.
  *
  *  @param  func    A user defined callback function.
@@ -719,10 +779,10 @@ inv_error_t inv_set_fifo_processed_callback(void (*func) (void))
 
 /**
  * @internal
- * @brief   Process data from the dmp read via the fifo.  Takes a buffer 
- *          filled with bytes read from the DMP FIFO. 
- *          Currently expects only the 16 bytes of quaternion data. 
- *          Calculates the motion parameters from that data and stores the 
+ * @brief   Process data from the dmp read via the fifo.  Takes a buffer
+ *          filled with bytes read from the DMP FIFO.
+ *          Currently expects only the 16 bytes of quaternion data.
+ *          Calculates the motion parameters from that data and stores the
  *          results in an internal data structure.
  * @param[in,out]   dmpData     Pointer to the buffer containing the fifo data.
  * @return  INV_SUCCESS or error code.
@@ -735,8 +795,6 @@ inv_error_t inv_process_fifo_packet(const unsigned char *dmpData)
 
     p = (unsigned char *)(&fifo_obj.decoded);
     N = fifo_obj.fifo_packet_size;
-    if (N > sizeof(fifo_obj.decoded))
-        return INV_ERROR_ASSERTION_FAILURE;
 
     memset(&fifo_obj.decoded, 0, sizeof(fifo_obj.decoded));
 
@@ -744,44 +802,63 @@ inv_error_t inv_process_fifo_packet(const unsigned char *dmpData)
         p[fifo_obj.offsets[kk]] = *dmpData++;
     }
 
-    // If multiplies are much greater cost than if checks, you could check
-    // to see if fifo_scale is non-zero first, or equal to (1L<<30)
+    /* If multiplies are much greater cost than if conditionals, 
+       you could check to see if fifo_scale is non-zero first, 
+       or equal to (1L << 30) */
     for (kk = 0; kk < REF_LAST; ++kk) {
         fifo_obj.decoded[kk] =
             inv_q30_mult(fifo_obj.decoded[kk], fifo_scale[kk]);
     }
 
+    /* save a copy of the 6 axis quaternion */
     memcpy(&fifo_obj.decoded[REF_QUATERNION_6AXIS],
            &fifo_obj.decoded[REF_QUATERNION], 4 * sizeof(long));
 
-    inv_obj.flags[INV_PROCESSED_DATA_READY] = 1;
+    if (fifo_obj.data_config[CONFIG_QUAT]) {
+        /* Make sure quaternion data looks good. 
+           A bad connection may cause a problem with the data set */
+        long long qsrd;
+        qsrd =
+            (long long)fifo_obj.decoded[REF_QUATERNION] * 
+                       fifo_obj.decoded[REF_QUATERNION] +
+            (long long)fifo_obj.decoded[REF_QUATERNION + 1] * 
+                       fifo_obj.decoded[REF_QUATERNION + 1] +
+            (long long)fifo_obj.decoded[REF_QUATERNION + 2] * 
+                       fifo_obj.decoded[REF_QUATERNION + 2] +
+            (long long)fifo_obj.decoded[REF_QUATERNION + 3] * 
+                       fifo_obj.decoded[REF_QUATERNION + 3];
+        qsrd -= (1LL << 60);
+        if (qsrd < 0)
+            qsrd = -qsrd;
+        if (qsrd > (1LL << 56)) {
+            /* Quaternion data has wrong magnitude and is probably trashed */
+            return INV_WARNING_QUAT_TRASHED;
+        }
+    }
+
+    inv_obj.sys->flags[INV_PROCESSED_DATA_READY] = 1;
     fifo_obj.cache = 0;
 
     return INV_SUCCESS;
 }
 
-/** Converts 16-bit temperature data as read from temperature register
-* into Celcius scaled by 2^16.
-*/
-long inv_decode_temperature(short tempReg)
+/**
+ *  @brief  Converts 16-bit temperature data as read from temperature register
+ *          into Celcius scaled by 2^16.
+ *  @param  temp_reg
+ *              the temperature expressed in the internal device representation
+ *              as a 2-bytes word.
+ */
+long inv_decode_temperature(short temp_reg)
 {
-#if defined CONFIG_MPU_SENSORS_MPU6050A2
-    // Celcius = 35 + (T + 3048.7)/325.9
-    return 2906830L + inv_q30_mult((long)tempReg << 16, 3294697L);
-#endif
-#if defined CONFIG_MPU_SENSORS_MPU6050B1
-    // Celcius = 35 + (T + 927.4)/360.6
-    return 2462307L + inv_q30_mult((long)tempReg << 16, 2977653L);
-#endif
-#if defined CONFIG_MPU_SENSORS_MPU3050
-    // Celcius = 35 + (T + 13200)/280
-    return 5383314L + inv_q30_mult((long)tempReg << 16, 3834792L);
-#endif
+    /* Celcius = 35 + (T + 13200) / 280 */
+    return 5383314L + inv_q30_mult((long)temp_reg << 16, 3834792L);
 }
 
-/**  @internal
-* Returns the temperature in hardware units. The scaling may change from part to part.
-*/
+/** @internal
+ *  @brief  Returns the temperature in hardware units.
+ *          The scaling may change from part to part.
+ */
 inv_error_t inv_get_temperature_raw(short *data)
 {
     if (data == NULL)
@@ -791,8 +868,7 @@ inv_error_t inv_get_temperature_raw(short *data)
         inv_error_t result;
         unsigned char regs[2];
         if ((fifo_obj.cache & FIFO_CACHE_TEMPERATURE) == 0) {
-            if (FIFO_DEBUG)
-                MPL_LOGI("Fetching the temperature from the registers\n");
+            MPL_LOGV("fetch temp from registers\n");
             fifo_obj.cache |= FIFO_CACHE_TEMPERATURE;
             result = inv_serial_read(inv_get_serial_handle(),
                                 inv_get_mpu_slave_addr(), MPUREG_TEMP_OUT_H, 2,
@@ -808,7 +884,7 @@ inv_error_t inv_get_temperature_raw(short *data)
     return INV_SUCCESS;
 }
 
-/** 
+/**
  *  @brief      Returns 1-element vector of temperature. It is read from the hardware if it
  *              doesn't exist in the FIFO.
  *  @param[out] data    1-element vector of temperature
@@ -889,6 +965,8 @@ inv_error_t inv_get_gyro_sensor(long *data)
         inv_error_t result;
         unsigned char regs[6];
         if ((fifo_obj.cache & FIFO_CACHE_GYRO) == 0) {
+            MPL_LOGV("fetch gyro from registers\n");
+
             fifo_obj.cache |= FIFO_CACHE_GYRO;
             result =
                 inv_serial_read(inv_get_serial_handle(),
@@ -929,7 +1007,7 @@ inv_error_t inv_get_gyro_sensor(long *data)
     return INV_SUCCESS;
 }
 
-/** 
+/**
  *  @brief      Returns 6-element vector of gyro and accel data
  *  @param[out] data    6-element vector of gyro and accel data
  *  @return     0 on success or an error code.
@@ -950,34 +1028,21 @@ inv_error_t inv_get_gyro_and_accel_sensor(long *data)
     return INV_SUCCESS;
 }
 
-/** 
- *  @brief      Returns 3-element vector of external sensor
- *  @param[out] data    3-element vector of external sensor
+/**
+ *  @brief      Returns 3-element vector of external sensor.
+ *  @param[out] data
+ *                  3-element vector of external sensor
+ *  @param[in]  size
+ *                  the size of the buffer.
  *  @return     0 on success or an error code.
  */
 inv_error_t inv_get_external_sensor_data(long *data, int size)
 {
-#if defined CONFIG_MPU_SENSORS_MPU6050A2 || \
-	defined CONFIG_MPU_SENSORS_MPU6050B1
-    int ii;
-    if (data == NULL)
-        return INV_ERROR_INVALID_PARAMETER;
-
-    if (!fifo_obj.data_config[CONFIG_RAW_EXTERNAL])
-        return INV_ERROR_FEATURE_NOT_ENABLED;
-
-    for (ii = 0; ii < size && ii < 6; ii++) {
-        data[ii] = fifo_obj.decoded[REF_RAW_EXTERNAL + ii];
-    }
-
-    return INV_SUCCESS;
-#else
     memset(data, 0, COMPASS_NUM_AXES * sizeof(long));
     return INV_ERROR_FEATURE_NOT_IMPLEMENTED;
-#endif
 }
 
-/** 
+/**
  *  Sends accelerometer data to the FIFO.
  *
  *  @param[in] elements Which of the 3 elements to send. Use INV_ALL for 3 axis
@@ -1005,13 +1070,13 @@ inv_error_t inv_send_accel(uint_fast16_t elements, uint_fast16_t accuracy)
     }
 
     for (kk = 0; kk < ACCEL_NUM_AXES; kk++) {
-        fifo_scale[REF_ACCEL + kk] = 2 * inv_obj.accel_sens;
+        fifo_scale[REF_ACCEL + kk] = 2 * inv_obj.accel->sens;
     }
 
     return inv_set_footer();
 }
 
-/** 
+/**
  * Sends control data to the FIFO. Control data is a 4 length vector of 32-bits.
  *
  *  @param[in] elements Which of the 4 elements to send. Use INV_ALL for all
@@ -1055,10 +1120,10 @@ inv_error_t inv_send_cntrl_data(uint_fast16_t elements, uint_fast16_t accuracy)
     return inv_set_footer();
 }
 
-/** 
+/**
  * Adds a rolling counter to the fifo packet.  When used with the footer
  * the data comes out the first time:
- * 
+ *
  * @code
  * <data0><data1>...<dataN><PacketNum0><PacketNum1>
  * @endcode
@@ -1069,7 +1134,7 @@ inv_error_t inv_send_cntrl_data(uint_fast16_t elements, uint_fast16_t accuracy)
  * @endcode
  *
  * This allows for scanning of the fifo for packets
- * 
+ *
  * @return INV_SUCCESS or error code
  */
 inv_error_t inv_send_packet_number(uint_fast16_t accuracy)
@@ -1102,7 +1167,7 @@ inv_error_t inv_send_packet_number(uint_fast16_t accuracy)
 
 /**
  *  @brief  Send the computed gravity vectors into the FIFO.
- *          The gravity vectors can be retrieved from the FIFO via 
+ *          The gravity vectors can be retrieved from the FIFO via
  *          inv_get_gravity(), to have the gravitation vector expressed
  *          in coordinates relative to the body.
  *
@@ -1111,10 +1176,10 @@ inv_error_t inv_send_packet_number(uint_fast16_t accuracy)
  *              the gravitation vectors components bitmask.
  *              To send all compoents use INV_ALL.
  *  @param  accuracy
- *              The number of bits the gravitation vector is expressed 
+ *              The number of bits the gravitation vector is expressed
  *              into.
  *              Set to INV_32_BIT for 32-bit data, or INV_16_BIT for 16
- *              bit data. 
+ *              bit data.
  *              Set to zero to remove it from the FIFO.
  *
  *  @return INV_SUCCESS if successful, a non-zero error code otherwise.
@@ -1175,16 +1240,20 @@ inv_error_t inv_send_gyro(uint_fast16_t elements, uint_fast16_t accuracy)
     }
     result = inv_construct3_fifo(regs, elements, accuracy, REF_GYROS,
                                  KEY_CFG_9, CONFIG_GYROS);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
 
     return inv_set_footer();
 }
 
-/** Sends linear accelerometer data to the FIFO. 
+/** Sends linear accelerometer data to the FIFO.
  *
- *  Linear accelerometer data is a 3 length vector of 32-bits. It is the 
+ *  Linear accelerometer data is a 3 length vector of 32-bits. It is the
  *  acceleration in the body frame with gravity removed.
- * 
- * 
+ *
+ *
  *  @param[in] elements Which of the 3 elements to send. Use INV_ALL for all of
  *            them or INV_ELEMENT_1, INV_ELEMENT_2, INV_ELEMENT_3 or'd together
  *            for a subset.
@@ -1222,7 +1291,7 @@ inv_error_t inv_send_linear_accel(uint_fast16_t elements,
  *  in the world frame with gravity removed. Should be called once after
  *  inv_dmp_open() and before inv_dmp_start().
  *
- *  @param[in] elements Which of the 3 elements to send. Use INV_ALL for all of 
+ *  @param[in] elements Which of the 3 elements to send. Use INV_ALL for all of
  *             them or INV_ELEMENT_1, INV_ELEMENT_2, INV_ELEMENT_3 or'd together
  *             for a subset.
  *  @param[in] accuracy Set to INV_32_BIT for 32-bit data, or INV_16_BIT for 16
@@ -1240,6 +1309,10 @@ inv_error_t inv_send_linear_accel_in_world(uint_fast16_t elements,
         return result;
     }
     result = inv_send_quaternion(accuracy);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
 
     return inv_set_footer();
 }
@@ -1285,7 +1358,7 @@ inv_error_t inv_send_quaternion(uint_fast16_t accuracy)
     return inv_set_footer();
 }
 
-/** Sends raw data to the FIFO. 
+/** Sends raw data to the FIFO.
  *  Should be called once after inv_dmp_open() and before inv_dmp_start().
  *  @param[in] elements Which of the 7 elements to send. Use INV_ALL for all of them
  *            or INV_ELEMENT_1, INV_ELEMENT_2, INV_ELEMENT_3 ... INV_ELEMENT_7 or'd together
@@ -1298,66 +1371,11 @@ inv_error_t inv_send_quaternion(uint_fast16_t accuracy)
 inv_error_t inv_send_sensor_data(uint_fast16_t elements, uint_fast16_t accuracy)
 {
     int result;
-#if defined CONFIG_MPU_SENSORS_MPU6050A2 || \
-	defined CONFIG_MPU_SENSORS_MPU6050B1
-    unsigned char regs[7] = { DINAA0 + 3, DINAA0 + 3, DINAA0 + 3,
-        DINAA0 + 3, DINAA0 + 3, DINAA0 + 3,
-        DINAA0 + 3
-    };
-
-    if (inv_get_state() < INV_STATE_DMP_OPENED)
-        return INV_ERROR_SM_IMPROPER_STATE;
-
-    if (accuracy)
-        accuracy = INV_16_BIT;
-
-    elements = inv_set_fifo_reference(elements, accuracy, REF_RAW, 7);
-
-    if (elements & 1)
-        fifo_obj.data_config[CONFIG_TEMPERATURE] = 1 | INV_16_BIT;
-    else
-        fifo_obj.data_config[CONFIG_TEMPERATURE] = 0;
-    if (elements & 0x7e)
-        fifo_obj.data_config[CONFIG_RAW_DATA] =
-            (0x3f & (elements >> 1)) | INV_16_BIT;
-    else
-        fifo_obj.data_config[CONFIG_RAW_DATA] = 0;
-
-    if (elements & INV_ELEMENT_1) {
-        regs[0] = DINACA;
-    }
-    if (elements & INV_ELEMENT_2) {
-        regs[1] = DINBC4;
-    }
-    if (elements & INV_ELEMENT_3) {
-        regs[2] = DINACC;
-    }
-    if (elements & INV_ELEMENT_4) {
-        regs[3] = DINBC6;
-    }
-    if (elements & INV_ELEMENT_5) {
-        regs[4] = DINBC0;
-    }
-    if (elements & INV_ELEMENT_6) {
-        regs[5] = DINAC8;
-    }
-    if (elements & INV_ELEMENT_7) {
-        regs[6] = DINBC2;
-    }
-    result = inv_set_mpu_memory(KEY_CFG_15, 7, regs);
-    if (result) {
-        LOG_RESULT_LOCATION(result);
-        return result;
-    }
-
-    return inv_set_footer();
-
-#else
     INVENSENSE_FUNC_START;
     unsigned char regs[4] = { DINAA0 + 3,
-        DINAA0 + 3,
-        DINAA0 + 3,
-        DINAA0 + 3
+                              DINAA0 + 3,
+                              DINAA0 + 3,
+                              DINAA0 + 3
     };
 
     if (inv_get_state() < INV_STATE_DMP_OPENED)
@@ -1402,14 +1420,13 @@ inv_error_t inv_send_sensor_data(uint_fast16_t elements, uint_fast16_t accuracy)
         fifo_obj.data_config[CONFIG_RAW_DATA] = 0;
 
     return inv_set_footer();
-#endif
 }
 
-/** Sends raw external data to the FIFO. 
+/** Sends raw external data to the FIFO.
  *  Should be called once after inv_dmp_open() and before inv_dmp_start().
  *  @param[in] elements Which of the 3 elements to send. Use INV_ALL for all of them
  *            or INV_ELEMENT_1, INV_ELEMENT_2, INV_ELEMENT_3 or'd together
- *            for a subset. 
+ *            for a subset.
  *  @param[in] accuracy INV_16_BIT to send data, 0 to stop sending this data.
  *            Sending and Stop sending are reference counted, so data actually
  *            stops when the reference reaches zero.
@@ -1417,56 +1434,7 @@ inv_error_t inv_send_sensor_data(uint_fast16_t elements, uint_fast16_t accuracy)
 inv_error_t inv_send_external_sensor_data(uint_fast16_t elements,
                                           uint_fast16_t accuracy)
 {
-#if defined CONFIG_MPU_SENSORS_MPU6050A2 || \
-	defined CONFIG_MPU_SENSORS_MPU6050B1
-    int result;
-    unsigned char regs[6] = { DINAA0 + 3, DINAA0 + 3,
-                              DINAA0 + 3, DINAA0 + 3,
-                              DINAA0 + 3, DINAA0 + 3 };
-
-    if (inv_get_state() < INV_STATE_DMP_OPENED)
-        return INV_ERROR_SM_IMPROPER_STATE;
-
-    if (accuracy)
-        accuracy = INV_16_BIT;
-
-    elements = inv_set_fifo_reference(elements, accuracy, REF_RAW_EXTERNAL, 6);
-
-    if (elements)
-        fifo_obj.data_config[CONFIG_RAW_EXTERNAL] = elements | INV_16_BIT;
-    else
-        fifo_obj.data_config[CONFIG_RAW_EXTERNAL] = 0;
-
-    if (elements & INV_ELEMENT_1) {
-        regs[0] = DINBC2;
-    }
-    if (elements & INV_ELEMENT_2) {
-        regs[1] = DINACA;
-    }
-    if (elements & INV_ELEMENT_3) {
-        regs[2] = DINBC4;
-    }
-    if (elements & INV_ELEMENT_4) {
-        regs[3] = DINBC0;
-    }
-    if (elements & INV_ELEMENT_5) {
-        regs[4] = DINAC8;
-    }
-    if (elements & INV_ELEMENT_6) {
-        regs[5] = DINACC;
-    }
-
-    result = inv_set_mpu_memory(KEY_CFG_EXTERNAL, sizeof(regs), regs);
-    if (result) {
-        LOG_RESULT_LOCATION(result);
-        return result;
-    }
-
-    return inv_set_footer();
-
-#else
-    return INV_ERROR_FEATURE_NOT_IMPLEMENTED;    // Feature not supported
-#endif
+    return INV_ERROR_FEATURE_NOT_IMPLEMENTED;    /* not supported */
 }
 
 /**
@@ -1481,7 +1449,7 @@ inv_error_t inv_send_external_sensor_data(uint_fast16_t elements,
  *              To send all compoents use INV_ALL.
  *
  *  @param  accuracy
- *              Use INV_32_BIT for 32-bit data or INV_16_BIT for 
+ *              Use INV_32_BIT for 32-bit data or INV_16_BIT for
  *              16-bit data.
  *              Set to zero to remove it from the FIFO.
  *
@@ -1572,11 +1540,15 @@ inv_error_t inv_send_eis(uint_fast16_t elements, uint_fast16_t accuracy)
     }
 
     result = inv_set_mpu_memory(KEY_P_EIS_FIFO_XSHIFT, 3, regs);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
 
     return inv_set_footer();
 }
 
-/** 
+/**
  * @brief       Returns 3-element vector of accelerometer data in body frame.
  *
  * @param[out]  data    3-element vector of accelerometer data in body frame.
@@ -1592,9 +1564,9 @@ inv_error_t inv_get_accel(long *data)
         return INV_ERROR_INVALID_PARAMETER;
 
     if ((!fifo_obj.data_config[CONFIG_ACCEL] &&
-         (mldl_cfg->requested_sensors & INV_DMP_PROCESSOR))
+         (mldl_cfg->inv_mpu_cfg->requested_sensors & INV_DMP_PROCESSOR))
         ||
-        (!(mldl_cfg->requested_sensors & INV_DMP_PROCESSOR) &&
+        (!(mldl_cfg->inv_mpu_cfg->requested_sensors & INV_DMP_PROCESSOR) &&
          !inv_accel_present()))
         return INV_ERROR_FEATURE_NOT_ENABLED;
 
@@ -1605,8 +1577,8 @@ inv_error_t inv_get_accel(long *data)
     return INV_SUCCESS;
 }
 
-/** 
- *  @brief      Returns 4-element quaternion vector derived from 6-axis or 
+/**
+ *  @brief      Returns 4-element quaternion vector derived from 6-axis or
  *  9-axis if 9-axis was implemented. 6-axis is gyros and accels. 9-axis is
  *  gyros, accel and compass.
  *
@@ -1630,10 +1602,10 @@ inv_error_t inv_get_quaternion(long *data)
     return INV_SUCCESS;
 }
 
-/** 
- *  @brief      Returns 4-element quaternion vector derived from 6 
+/**
+ *  @brief      Returns 4-element quaternion vector derived from 6
  *              axis sensors (gyros and accels).
- *  @param[out] data    
+ *  @param[out] data
  *                  4-element quaternion vector. One is scaled to 2^30.
  *  @return     0 on success or an error code.
  */
@@ -1653,21 +1625,56 @@ inv_error_t inv_get_6axis_quaternion(long *data)
     return INV_SUCCESS;
 }
 
-inv_error_t inv_get_relative_quaternion(long *data)
+/**
+ *  @brief      Returns raw gyro data in the body frame.
+ *
+ *  @param[out] data    Gyro data. 1 dps = 2^16.
+ *
+ *  @return     INV_SUCCESS if successful.
+ */
+inv_error_t inv_get_gyro_raw(long *data)
 {
-    if (data == NULL)
-        return INV_ERROR;
-    data[0] = inv_obj.relative_quat[0];
-    data[1] = inv_obj.relative_quat[1];
-    data[2] = inv_obj.relative_quat[2];
-    data[3] = inv_obj.relative_quat[3];
+    int ii;
+    inv_error_t result;
+    long gyro_raw[3], gyro_scaled[3];
+    struct mldl_cfg *mldl_cfg = inv_get_dl_config();
+
+    /* Get "raw" data in chip frame. This function returns the values stored in
+     * the gyro registers, which actually have the hardware offsets subtracted.
+     */
+    result = inv_get_gyro_sensor(gyro_raw);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+
+    /* Re-apply biases stored in bias registers. */
+    gyro_raw[0] -= (signed short)mldl_cfg->mpu_offsets->gyro[0] / 2;
+    gyro_raw[1] -= (signed short)mldl_cfg->mpu_offsets->gyro[1] / 2;
+    gyro_raw[2] -= (signed short)mldl_cfg->mpu_offsets->gyro[2] / 2;
+
+    for (ii = 0; ii < 3; ii++) {
+        /* Switch from chip to body frame. */
+        gyro_scaled[ii] =
+            inv_q30_mult(gyro_raw[0], inv_obj.calmat->gyro_orient[ii*3])+
+            inv_q30_mult(gyro_raw[1], inv_obj.calmat->gyro_orient[ii*3 + 1]) +
+            inv_q30_mult(gyro_raw[2], inv_obj.calmat->gyro_orient[ii*3 + 2]);
+        /* Apply scaling. */
+        gyro_scaled[ii] = inv_q30_mult((gyro_scaled[ii] << 16), 
+            inv_obj.gyro->sens);
+    }
+
+    data[0] = gyro_scaled[0];
+    data[1] = gyro_scaled[1];
+    data[2] = gyro_scaled[2];
+
     return INV_SUCCESS;
 }
 
-/** 
+/**
  *  @brief  Returns 3-element vector of gyro data in body frame.
- *  @param[out] data    
- *              3-element vector of gyro data in body frame 
+ *  @param[out] data
+ *              3-element vector of gyro data in body frame
  *              with gravity removed. One degree per second = 2^16.
  *  @return 0 on success or an error code.
  */
@@ -1690,7 +1697,7 @@ inv_error_t inv_get_gyro(long *data)
 /**
  *  @brief  Get the 3-element gravity vector from the FIFO expressed
  *          in coordinates relative to the body frame.
- *  @param  data    
+ *  @param  data
  *              3-element vector of gravity in body frame.
  *  @return 0 on success or an error code.
  */
@@ -1737,11 +1744,11 @@ inv_error_t inv_get_gravity(long *data)
     return INV_SUCCESS;
 }
 
-/** 
+/**
 * @brief        Sets the filter coefficent used for computing the acceleration
 *               bias which is used to compute linear acceleration.
 * @param[in] coef   Fitler coefficient. 0. means no filter, a small number means
-*                   a small cutoff frequency with an increasing number meaning 
+*                   a small cutoff frequency with an increasing number meaning
 *                   an increasing cutoff frequency.
 */
 inv_error_t inv_set_linear_accel_filter_coef(float coef)
@@ -1750,7 +1757,7 @@ inv_error_t inv_set_linear_accel_filter_coef(float coef)
     return INV_SUCCESS;
 }
 
-/** 
+/**
  *  @brief      Returns 3-element vector of accelerometer data in body frame
  *              with gravity removed.
  *  @param[out] data    3-element vector of accelerometer data in body frame
@@ -1798,7 +1805,7 @@ inv_error_t inv_get_linear_accel(long *data)
     return INV_SUCCESS;
 }
 
-/** 
+/**
  *  @brief      Returns 3-element vector of accelerometer data in world frame
  *              with gravity removed.
  *  @param[out] data    3-element vector of accelerometer data in world frame
@@ -1870,7 +1877,27 @@ inv_error_t inv_get_eis(long *data)
 
 }
 
-/** 
+/**
+ *  @brief      Returns value of packet number
+ *  @param[out] data    1-element vector of packet number
+ *  @return     0 for succes or an error code.
+ */
+inv_error_t inv_get_packet_number(uint16_t *data)
+{
+    long a;
+    if (data == NULL)
+        return INV_ERROR_INVALID_PARAMETER;
+
+    if (!fifo_obj.data_config[CONFIG_DMP_PACKET_NUMBER])
+        return INV_ERROR_FEATURE_NOT_ENABLED;
+
+    a = fifo_obj.decoded[REF_DMP_PACKET];
+    /* Only the upper 16 bits of the long decoded[REF_DMP_PACKET] are significant.*/
+    data[0] = (uint16_t) (a >> 16);
+    return INV_SUCCESS;
+}
+
+/**
  *  @brief      Returns 3-element vector of accelerometer data in body frame.
  *  @param[out] data    3-element vector of accelerometer data in body frame in g's.
  *  @return     0 for success or an error code.
@@ -1897,7 +1924,32 @@ inv_error_t inv_get_accel_float(float *data)
     return INV_SUCCESS;
 }
 
-/** 
+/**
+ *  @brief      Returns raw gyro data in the body frame.
+ *
+ *  @param[out] data    Gyro data.
+ *
+ *  @return     INV_SUCCESS if successful.
+ */
+inv_error_t inv_get_gyro_raw_float(float *data)
+{
+    inv_error_t result;
+    long gyro_raw[3];
+
+    result = inv_get_gyro_raw(gyro_raw);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+
+    data[0] = gyro_raw[0] / 65536.f;
+    data[1] = gyro_raw[1] / 65536.f;
+    data[2] = gyro_raw[2] / 65536.f;
+
+    return INV_SUCCESS;
+}
+
+/**
  *  @brief      Returns 4-element quaternion vector.
  *  @param[out] data    4-element quaternion vector.
  *  @return     0 on success, an error code otherwise.
@@ -1939,15 +1991,15 @@ inv_error_t inv_get_quaternion_float(float *data)
  *          then inv_run_state_callbacks() will be called to allow features
  *          that depend upon fundamental constants to be updated.
  *
- *  @pre    inv_dmp_open() 
- *          @ifnot MPL_MF 
- *              or inv_open_low_power_pedometer() 
+ *  @pre    inv_dmp_open()
+ *          @ifnot MPL_MF
+ *              or inv_open_low_power_pedometer()
  *              or inv_eis_open_dmp()
  *          @endif
- *          and inv_dmp_start() 
+ *          and inv_dmp_start()
  *          must <b>NOT</b> have been called.
  *
- * @param   fifoRate    Divider value - 1.  Output rate is 
+ * @param   fifoRate    Divider value - 1.  Output rate is
  *          (DMP Sample Rate) / (fifoRate + 1).
  *
  * @return  INV_SUCCESS if successful, ML error code on any failure.
@@ -1964,9 +2016,14 @@ inv_error_t inv_set_fifo_rate(unsigned short fifoRate)
     if (state != INV_STATE_DMP_OPENED && state != INV_STATE_DMP_STARTED)
         return INV_ERROR_SM_IMPROPER_STATE;
 
-    fifo_obj.fifo_rate = fifoRate;
+    /* When fifoRate is 0xffff we just use the default rate that has already been stored
+    * this is done to handle holding the correct fifoRate across power modes */
+    if (fifoRate != 0xffff)
+        fifo_obj.fifo_rate = fifoRate;
+    
+    fifoRate = fifo_obj.fifo_rate;
 
-    if (mldl_cfg->requested_sensors & INV_DMP_PROCESSOR) {
+    if (mldl_cfg->inv_mpu_cfg->requested_sensors & INV_DMP_PROCESSOR) {
 
         regs[0] = (unsigned char)((fifoRate >> 8) & 0xff);
         regs[1] = (unsigned char)(fifoRate & 0xff);
@@ -1976,21 +2033,23 @@ inv_error_t inv_set_fifo_rate(unsigned short fifoRate)
             LOG_RESULT_LOCATION(result);
             return result;
         }
-        fifo_obj.sample_step_size_ms = 
+        fifo_obj.sample_step_size_ms =
             (unsigned short)(((long)fifoRate + 1) *
                              (inv_mpu_get_sampling_period_us
-                              (mldl_cfg)) / 1000L);
+                              (mldl_cfg->mpu_gyro_cfg)) / 1000L);
 
         if (state == INV_STATE_DMP_STARTED)
             result = inv_run_state_callbacks(state);
-    } else if (mldl_cfg->requested_sensors & INV_THREE_AXIS_ACCEL) {
+
+    } else if (mldl_cfg->inv_mpu_cfg->requested_sensors & INV_THREE_AXIS_ACCEL) {
         struct ext_slave_config config;
         long data;
         config.key = MPU_SLAVE_CONFIG_ODR_RESUME;
         config.len = sizeof(long);
         config.apply = (state == INV_STATE_DMP_STARTED);
         config.data = &data;
-        data = (1000 * inv_mpu_get_sampling_rate_hz(mldl_cfg)) / (fifoRate + 1);
+        data = (1000 * inv_mpu_get_sampling_rate_hz(
+                    mldl_cfg->mpu_gyro_cfg)) / (fifoRate + 1);
 
         /* Ask for the same frequency */
         result = inv_mpu_config_accel(mldl_cfg,
@@ -2007,8 +2066,7 @@ inv_error_t inv_set_fifo_rate(unsigned short fifoRate)
             LOG_RESULT_LOCATION(result);
             return result;
         }
-        if(FIFO_DEBUG)
-            MPL_LOGI("Actual ODR: %ld Hz\n", data / 1000);
+        MPL_LOGI("Actual ODR: %ld mHz\n", data);
         /* Record the actual frequency granted odr is in mHz */
         fifo_obj.sample_step_size_ms = (unsigned short)((1000L * 1000L) / data);
     }
@@ -2021,12 +2079,18 @@ inv_error_t inv_set_fifo_rate(unsigned short fifoRate)
  *
  *          The fifo rate when there is no fifo is the equivilent divider when
  *          derived from the value set by SetSampleSteSizeMs()
- *          
+ *
  * @return  The value of the fifo rate divider or INV_INVALID_FIFO_RATE on error.
  */
 unsigned short inv_get_fifo_rate(void)
 {
-    return fifo_obj.fifo_rate;
+    struct mldl_cfg *mldl_cfg = inv_get_dl_config();
+    if (mldl_cfg->inv_mpu_cfg->requested_sensors & INV_DMP_PROCESSOR)
+        return fifo_obj.fifo_rate;
+    else
+        return (unsigned short)((1000 * fifo_obj.sample_step_size_ms) /
+                                (inv_mpu_get_sampling_period_us(
+                                     mldl_cfg->mpu_gyro_cfg))) - 1;
 }
 
 /**
@@ -2041,9 +2105,9 @@ int_fast16_t inv_get_sample_step_size_ms(void)
 {
     struct mldl_cfg *mldl_cfg = inv_get_dl_config();
 
-    if (mldl_cfg->requested_sensors & INV_DMP_PROCESSOR)
+    if (mldl_cfg->inv_mpu_cfg->requested_sensors & INV_DMP_PROCESSOR)
         return (fifo_obj.fifo_rate + 1) *
-            (inv_mpu_get_sampling_period_us(mldl_cfg) / 1000);
+            (inv_mpu_get_sampling_period_us(mldl_cfg->mpu_gyro_cfg) / 1000);
     else
         return fifo_obj.sample_step_size_ms;
 }
@@ -2060,15 +2124,15 @@ int_fast16_t inv_get_sample_frequency(void)
 {
     struct mldl_cfg *mldl_cfg = inv_get_dl_config();
 
-    if (mldl_cfg->requested_sensors & INV_DMP_PROCESSOR)
-        return (inv_mpu_get_sampling_rate_hz(mldl_cfg) /
+    if (mldl_cfg->inv_mpu_cfg->requested_sensors & INV_DMP_PROCESSOR)
+        return (inv_mpu_get_sampling_rate_hz(mldl_cfg->mpu_gyro_cfg) /
                 (fifo_obj.fifo_rate + 1));
     else
         return (1000 / fifo_obj.sample_step_size_ms);
 }
 
-/** 
- *  @brief  The gyro data magnitude squared : 
+/**
+ *  @brief  The gyro data magnitude squared :
  *          (1 degree per second)^2 = 2^6 = 2^GYRO_MAG_SQR_SHIFT.
  *  @return the computed magnitude squared output of the gyroscope.
  */
@@ -2087,7 +2151,7 @@ unsigned long inv_get_gyro_sum_of_sqr(void)
     return gmag;
 }
 
-/** 
+/**
  *  @brief  The gyro data magnitude squared:
  *          (1 g)^2 = 2^16 = 2^ACC_MAG_SQR_SHIFT.
  *  @return the computed magnitude squared output of the accelerometer.
@@ -2115,17 +2179,14 @@ unsigned long inv_accel_sum_of_sqr(void)
 /**
  *  @internal
  */
-void inv_override_quaternion(float *q)
+void inv_override_quaternion(long *q)
 {
-    int kk;
-    for (kk = 0; kk < 4; ++kk) {
-        fifo_obj.decoded[REF_QUATERNION + kk] = (long)(q[kk] * (1L << 30));
-    }
+    memcpy(&fifo_obj.decoded[REF_QUATERNION], q, 4 * sizeof(long));
 }
 
 /**
  * @internal
- * @brief   This registers a function to be called for each set of 
+ * @brief   This registers a function to be called for each set of
  *          gyro/quaternion/rotation matrix/etc output.
  * @param[in] func The callback function to register
  * @param[in] priority The unique priority number of the callback. Lower numbers
@@ -2142,8 +2203,8 @@ inv_error_t inv_register_fifo_rate_process(inv_obj_func func, int priority)
     if (INV_SUCCESS != result) {
         return result;
     }
-    // Make sure we haven't registered this function already
-    // Or used the same priority
+    /* Make sure we haven't registered this function already
+       Or used the same priority */
     for (kk = 0; kk < fifo_rate_obj.num_cb; ++kk) {
         if ((fifo_rate_obj.fifo_process_cb[kk] == func) ||
             (fifo_rate_obj.priority[kk] == priority)) {
@@ -2152,17 +2213,17 @@ inv_error_t inv_register_fifo_rate_process(inv_obj_func func, int priority)
         }
     }
 
-    // Make sure we have not filled up our number of allowable callbacks
+    /* Make sure we have not filled up our number of allowable callbacks */
     if (fifo_rate_obj.num_cb <= MAX_HIGH_RATE_PROCESSES - 1) {
         kk = 0;
         if (fifo_rate_obj.num_cb != 0) {
-            // set kk to be where this new callback goes in the array
+            /* set kk to be where this new callback goes in the array */
             while ((kk < fifo_rate_obj.num_cb) &&
                    (fifo_rate_obj.priority[kk] < priority)) {
                 kk++;
             }
             if (kk != fifo_rate_obj.num_cb) {
-                // We need to move the others
+                /* We need to move the others */
                 for (nn = fifo_rate_obj.num_cb; nn > kk; --nn) {
                     fifo_rate_obj.fifo_process_cb[nn] =
                         fifo_rate_obj.fifo_process_cb[nn - 1];
@@ -2170,7 +2231,7 @@ inv_error_t inv_register_fifo_rate_process(inv_obj_func func, int priority)
                 }
             }
         }
-        // Add new callback
+        /* Add new callback */
         fifo_rate_obj.fifo_process_cb[kk] = func;
         fifo_rate_obj.priority[kk] = priority;
         fifo_rate_obj.num_cb++;
@@ -2184,7 +2245,7 @@ inv_error_t inv_register_fifo_rate_process(inv_obj_func func, int priority)
 
 /**
  * @internal
- * @brief   This unregisters a function to be called for each set of 
+ * @brief   This unregisters a function to be called for each set of
  *          gyro/quaternion/rotation matrix/etc output.
  * @return  error code.
  */
@@ -2220,17 +2281,48 @@ inv_error_t inv_unregister_fifo_rate_process(inv_obj_func func)
     return result;
 
 }
-#ifdef UMPL
-bool bFIFIDataAvailable = FALSE;
-bool isUmplDataInFIFO(void)
+
+/**
+ *  @brief      checks if a FIFO callback has already been registered.
+ *
+ *  @param[in]  callback        Callback function.
+ *  @param[out] is_registered   1 if function is registered.
+ *
+ *  @return     INV_SUCCESS if successful.
+ */
+inv_error_t inv_check_fifo_callback(inv_obj_func callback,
+    unsigned char *is_registered)
 {
-    return bFIFIDataAvailable;
+    int ii;
+    /*
+    inv_error_t result;
+
+    result = inv_lock_mutex(fifo_rate_obj.mutex);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    */
+
+    is_registered[0] = false;
+
+    for (ii = 0; ii < fifo_rate_obj.num_cb; ii++) {
+        if (fifo_rate_obj.fifo_process_cb[ii] == callback) {
+            is_registered[0] = true;
+            break;
+        }
+    }
+
+    /*
+    result = inv_unlock_mutex(fifo_rate_obj.mutex);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    */
+    return INV_SUCCESS;
 }
-void setUmplDataInFIFOFlag(bool flag)
-{
-    bFIFIDataAvailable = flag;
-}
-#endif
+
 inv_error_t inv_run_fifo_rate_processes(void)
 {
     int kk;
@@ -2238,28 +2330,32 @@ inv_error_t inv_run_fifo_rate_processes(void)
 
     result = inv_lock_mutex(fifo_rate_obj.mutex);
     if (INV_SUCCESS != result) {
-        MPL_LOGE("MLOsLockMutex returned %d\n", result);
+        MPL_LOGE("inv_lock_mutex returned %d\n", result);
         return result;
     }
-    // User callbacks take priority over the fifo_process_cb callback
-    if (fifo_obj.fifo_process_cb)
-        fifo_obj.fifo_process_cb();
 
     for (kk = 0; kk < fifo_rate_obj.num_cb; ++kk) {
         if (fifo_rate_obj.fifo_process_cb[kk]) {
-            result2 = fifo_rate_obj.fifo_process_cb[kk] (&inv_obj);
+            result2 = fifo_rate_obj.fifo_process_cb[kk](&inv_obj);
             if (result == INV_SUCCESS)
-#ifdef UMPL		 
-	 setUmplDataInFIFOFlag(TRUE);
-#endif
                 result = result2;
+            MPL_LOGW_IF(result2 > 0,
+                "Calling fifo_process_cb %d/%d, "
+                "priority %d, callback %p, returned %d\n",
+                kk, fifo_rate_obj.num_cb, 
+                fifo_rate_obj.priority[kk], 
+                fifo_rate_obj.fifo_process_cb[kk], result2);
         }
     }
+
+    /* User callbacks */
+    if (fifo_obj.fifo_process_cb)
+        fifo_obj.fifo_process_cb();
 
     inv_unlock_mutex(fifo_rate_obj.mutex);
     return result;
 }
 
-/*********************/
-         /** \}*//* defgroup */
-/*********************/
+/**
+ * @}
+ */

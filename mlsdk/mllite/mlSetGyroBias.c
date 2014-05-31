@@ -1,24 +1,12 @@
 /*
  $License:
-   Copyright 2011 InvenSense, Inc.
-
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
-
- http://www.apache.org/licenses/LICENSE-2.0
-
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
-  $
+    Copyright (C) 2011 InvenSense Corporation, All Rights Reserved.
+ $
  */
 
 /******************************************************************************
  *
- * $Id:$
+ * $Id: mlSetGyroBias.c 6164 2011-10-06 18:04:23Z mcaramello $
  *
  *****************************************************************************/
 
@@ -27,15 +15,17 @@
 #include "ml.h"
 #include <string.h>
 #include "mldl.h"
+#include "mlmath.h"
 #include "mlMathFunc.h"
+#include "dmpKey.h"
 
 typedef struct {
     int needToSetBias;
     short currentBias[3];
+    long maxGyroBias;
     int mode;
     int motion;
 } tSGB;
-
 tSGB sgb;
 
 /** Records a motion event that may cause a callback when the priority for this
@@ -53,11 +43,11 @@ void inv_convert_bias(const unsigned char *regs, short *bias)
 {
     long biasTmp2[3], biasTmp[3], biasPrev[3];
     int i;
-    int sf;
+    long sf;
     struct mldl_cfg *mldl_cfg = inv_get_dl_config();
 
-    if (mldl_cfg->gyro_sens_trim != 0) {
-        sf = 2000 * 131 / mldl_cfg->gyro_sens_trim;
+    if (mldl_cfg->mpu_chip_info->gyro_sens_trim != 0) {
+        sf = 2000 * 131 / mldl_cfg->mpu_chip_info->gyro_sens_trim;
     } else {
         sf = 2000;
     }
@@ -66,14 +56,14 @@ void inv_convert_bias(const unsigned char *regs, short *bias)
     }
     // Rotate bias vector by the transpose of the orientation matrix
     for (i = 0; i < 3; ++i) {
-        biasTmp[i] = inv_q30_mult(biasTmp2[0], inv_obj.gyro_orient[i]) +
-            inv_q30_mult(biasTmp2[1], inv_obj.gyro_orient[i + 3]) +
-            inv_q30_mult(biasTmp2[2], inv_obj.gyro_orient[i + 6]);
+        biasTmp[i] = inv_q30_mult(biasTmp2[0], inv_obj.calmat->gyro_orient[i]) +
+            inv_q30_mult(biasTmp2[1], inv_obj.calmat->gyro_orient[i + 3]) +
+            inv_q30_mult(biasTmp2[2], inv_obj.calmat->gyro_orient[i + 6]);
     }
 
     for (i = 0; i < GYRO_NUM_AXES; i++) {
         biasTmp[i] = (long)(biasTmp[i] * 1.39882274201861f / sf);
-        biasPrev[i] = (long)mldl_cfg->offset[i];
+        biasPrev[i] = (long)mldl_cfg->mpu_offsets->gyro[i];
         if (biasPrev[i] > 32767)
             biasPrev[i] -= 65536L;
     }
@@ -107,13 +97,14 @@ inv_error_t inv_set_gyro_bias_in_hw_unit(const short *bias, int mode)
 inv_error_t inv_set_gyro_bias_in_dps(const long *bias, int mode)
 {
     struct mldl_cfg *mldl_cfg = inv_get_dl_config();
-    int sf, i;
+    int i;
+    long sf;
     long biasTmp;
     short offset[3];
     inv_error_t result;
 
-    if (mldl_cfg->gyro_sens_trim != 0) {
-        sf = 2000 * 131 / mldl_cfg->gyro_sens_trim;
+    if (mldl_cfg->mpu_chip_info->gyro_sens_trim != 0) {
+        sf = 2000 * 131 / mldl_cfg->mpu_chip_info->gyro_sens_trim;
     } else {
         sf = 2000;
     }
@@ -140,32 +131,83 @@ inv_error_t inv_set_gyro_bias_in_dps_float(const float *bias, int mode)
     return result;
 }
 
+inv_error_t inv_set_max_gyro_bias(long bias)
+{
+    inv_error_t result = INV_SUCCESS;
+
+    if (bias < 0) {
+        bias = bias * -1;
+    }
+
+    sgb.maxGyroBias = bias;
+
+   //DMP Code to push down into Mantis
+
+    return result;
+}
+
+inv_error_t inv_check_max_gyro_bias(short *offset)
+{
+    long tmp1;
+    long tmp2;
+    int ii;
+    long sf;
+    struct mldl_cfg *mldl_cfg = inv_get_dl_config();
+
+    if (sgb.maxGyroBias == 0) {
+        return INV_SUCCESS;
+    }
+
+    tmp2 = sgb.maxGyroBias* 65536L;
+
+    if (mldl_cfg->mpu_chip_info->gyro_sens_trim != 0) {
+        sf = 2000 * 131 / mldl_cfg->mpu_chip_info->gyro_sens_trim;
+    } else {
+        sf = 2000;
+    }
+
+    for (ii = 0; ii < GYRO_NUM_AXES; ii++) {
+        tmp1 = -offset[ii]*sf;
+        if (ABS(tmp1) > ABS(tmp2)) {
+            return INV_WARNING_GYRO_MAG;
+        }
+    }
+
+    return INV_SUCCESS;
+}
+
+
+
 inv_error_t MLSetGyroBiasCB(struct inv_obj_t * inv_obj)
 {
     inv_error_t result = INV_SUCCESS;
     if (sgb.needToSetBias) {
+        //result = inv_check_max_gyro_bias(sgb.currentBias);
         result = inv_set_offset(sgb.currentBias);
         sgb.needToSetBias = 0;
+        inv_obj->adv_fusion->gyro_bias_err = 2*65536L;
     }
 
     // Check if motion state has changed
     if (sgb.motion == INV_MOTION) {
         // We are moving
-        if (inv_obj->motion_state == INV_NO_MOTION) {
+        if (inv_obj->lite_fusion->motion_state == INV_NO_MOTION) {
             //Trigger motion callback
-            inv_obj->motion_state = INV_MOTION;
-            inv_obj->flags[INV_MOTION_STATE_CHANGE] = INV_MOTION;
+            inv_obj->lite_fusion->motion_state = INV_MOTION;
+            inv_obj->sys->flags[INV_MOTION_STATE_CHANGE] = INV_MOTION;
             if (inv_params_obj.motion_cb_func) {
                 inv_params_obj.motion_cb_func(INV_MOTION);
             }
         }
     } else if (sgb.motion == INV_NO_MOTION){
         // We are not moving
-        if (inv_obj->motion_state == INV_MOTION) {
+        result = inv_disable_bias_from_gravity();
+
+        if (inv_obj->lite_fusion->motion_state == INV_MOTION) {
             //Trigger no motion callback
-            inv_obj->motion_state = INV_NO_MOTION;
-            inv_obj->got_no_motion_bias = TRUE;
-            inv_obj->flags[INV_MOTION_STATE_CHANGE] = INV_NO_MOTION;
+            inv_obj->lite_fusion->motion_state = INV_NO_MOTION;
+            inv_obj->lite_fusion->got_no_motion_bias = true;
+            inv_obj->sys->flags[INV_MOTION_STATE_CHANGE] = INV_NO_MOTION;
             if (inv_params_obj.motion_cb_func) {
                 inv_params_obj.motion_cb_func(INV_NO_MOTION);
             }
@@ -180,7 +222,8 @@ inv_error_t inv_enable_set_bias(void)
     inv_error_t result;
     memset(&sgb, 0, sizeof(sgb));
 
-    sgb.motion = inv_obj.motion_state;
+    sgb.motion = inv_obj.lite_fusion->motion_state;
+    result = inv_set_max_gyro_bias(100L);
 
     result =
         inv_register_fifo_rate_process(MLSetGyroBiasCB,
@@ -194,5 +237,9 @@ inv_error_t inv_disable_set_bias(void)
 {
     inv_error_t result;
     result = inv_unregister_fifo_rate_process(MLSetGyroBiasCB);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
     return INV_SUCCESS;          // FIXME need to disable
 }

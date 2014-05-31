@@ -1,19 +1,7 @@
 /*
  $License:
-   Copyright 2011 InvenSense, Inc.
-
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
-
- http://www.apache.org/licenses/LICENSE-2.0
-
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
-  $
+    Copyright (C) 2011 InvenSense Corporation, All Rights Reserved.
+ $
  */
 
 #ifndef __MPU_H_
@@ -27,9 +15,6 @@
 #include <linux/types.h>
 #endif
 
-#if !defined CONFIG_MPU_SENSORS_MPU3050
-#error MPU6000 build including MPU3050 header
-#endif
 
 #define MPU_NAME "mpu3050"
 #define DEFAULT_MPU_SLAVEADDR       0x68

@@ -1,19 +1,7 @@
 /*
  $License:
-   Copyright 2011 InvenSense, Inc.
-
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
-
- http://www.apache.org/licenses/LICENSE-2.0
-
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
-  $
+    Copyright (C) 2011 InvenSense Corporation, All Rights Reserved.
+ $
  */
 
 /*
@@ -133,7 +121,8 @@ extern "C" {
 			MPL_LOG(LOG_VERBOSE, MPL_LOG_TAG, fmt, ##__VA_ARGS__);\
 	} while (0)
 #else
-#define MPL_LOGV(fmt, ...) MPL_LOG(LOG_VERBOSE, MPL_LOG_TAG, fmt, ##__VA_ARGS__)
+//#define MPL_LOGV(fmt, ...) MPL_LOG(LOG_VERBOSE, MPL_LOG_TAG, fmt, ##__VA_ARGS__)
+#define MPL_LOGV(fmt, ...) MPL_LOG(LOG_INFO, MPL_LOG_TAG, fmt, ##__VA_ARGS__)
 #endif
 #endif
 
@@ -171,7 +160,11 @@ extern "C" {
  * Simplified macro to send an info log message using the current MPL_LOG_TAG.
  */
 #ifndef MPL_LOGI
+#ifdef __KERNEL__
+#define MPL_LOGI(fmt, ...) pr_info(KERN_INFO MPL_LOG_TAG fmt, ##__VA_ARGS__)
+#else
 #define MPL_LOGI(fmt, ...) MPL_LOG(LOG_INFO, MPL_LOG_TAG, fmt, ##__VA_ARGS__)
+#endif
 #endif
 
 #ifndef MPL_LOGI_IF
@@ -283,8 +276,16 @@ extern "C" {
  */
 #ifndef MPL_LOG_PRI
 #ifdef ANDROID
+#ifndef LOGD      
+#define LOGE ALOGE
+#define LOGI ALOGI
+#define LOGV ALOGV
+#define LOGD ALOGD
+#define LOGW ALOGW
+#define LOGE_IF ALOGE_IF 
+#endif
 #define MPL_LOG_PRI(priority, tag, fmt, ...) \
-        ALOG(priority, tag, fmt, ##__VA_ARGS__)
+	ALOG(priority, tag, fmt, ##__VA_ARGS__)
 #elif defined __KERNEL__
 #define MPL_LOG_PRI(priority, tag, fmt, ...) \
 	pr_debug(MPL_##priority tag fmt, ##__VA_ARGS__)

@@ -1,30 +1,18 @@
 /*
  $License:
-   Copyright 2011 InvenSense, Inc.
-
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
-
- http://www.apache.org/licenses/LICENSE-2.0
-
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
-  $
+    Copyright (C) 2011 InvenSense Corporation, All Rights Reserved.
+ $
  */
 /******************************************************************************
  *
- * $Id: mldl.c 5653 2011-06-16 21:06:55Z nroyer $
+ * $Id: mldl.c 6075 2011-09-23 03:59:04Z mcaramello $
  *
  *****************************************************************************/
 
 /**
- *  @defgroup   MLDL 
+ *  @defgroup   MLDL
  *  @brief      Motion Library - Driver Layer.
- *              The Motion Library Driver Layer provides the intrface to the 
+ *              The Motion Library Driver Layer provides the intrface to the
  *              system drivers that are used by the Motion Library.
  *
  *  @{
@@ -39,15 +27,7 @@
 #include <string.h>
 
 #include "mpu.h"
-#if defined CONFIG_MPU_SENSORS_MPU6050A2
-#    include "mpu6050a2.h"
-#elif defined CONFIG_MPU_SENSORS_MPU6050B1
-#    include "mpu6050b1.h"
-#elif defined CONFIG_MPU_SENSORS_MPU3050
-#  include "mpu3050.h"
-#else
-#error Invalid or undefined CONFIG_MPU_SENSORS_MPUxxxx
-#endif
+#include "mpu3050.h"
 #include "mldl.h"
 #include "mldl_cfg.h"
 #include "compass.h"
@@ -59,6 +39,7 @@
 #include "mlFIFOHW.h"
 #include "compass.h"
 #include "pressure.h"
+#include "mldl_cfg_init.h"
 
 #include "log.h"
 #undef MPL_LOG_TAG
@@ -72,22 +53,16 @@
 
 #define MAX_LOAD_WRITE_SIZE (MPU_MEM_BANK_SIZE/2)   /* 128 */
 
-/*---- structure containing control variables used by MLDL ----*/
-static struct mldl_cfg mldlCfg;
-struct ext_slave_descr gAccel;
-struct ext_slave_descr gCompass;
-struct ext_slave_descr gPressure;
-struct mpu_platform_data gPdata;
-static void *sMLSLHandle;
-int_fast8_t intTrigger[NUM_OF_INTSOURCES];
+static void *g_mlsl_handle;
+int_fast8_t g_int_trigger[NUM_OF_INTSOURCES];
+static struct mldl_cfg *g_mldl_cfg;
 
 /*******************************************************************************
  * Functions for accessing the DMP memory via keys
  ******************************************************************************/
 
-unsigned short (*sGetAddress) (unsigned short key) = NULL;
-static const unsigned char *localDmpMemory = NULL;
-static unsigned short localDmpMemorySize = 0;
+unsigned short (*p_get_dmp_address) (unsigned short key) = NULL;
+struct mpu_ram g_original_ram = {0, 0};
 
 /**
  *  @internal
@@ -100,9 +75,8 @@ static unsigned short localDmpMemorySize = 0;
 void inv_set_get_address(unsigned short (*func) (unsigned short key))
 {
     INVENSENSE_FUNC_START;
-    _mldlDebug(MPL_LOGV("setGetAddress %d", (int)func);
-        )
-        sGetAddress = func;
+    MPL_LOGV("%s %d", __func__, (int)func);
+    p_get_dmp_address = func;
 }
 
 /**
@@ -118,18 +92,18 @@ uint_fast8_t inv_dmpkey_supported(unsigned short key)
 {
     unsigned short memAddr;
 
-    if (sGetAddress == NULL) {
-        MPL_LOGE("%s : sGetAddress is NULL\n", __func__);
-        return FALSE;
+    if (p_get_dmp_address == NULL) {
+        MPL_LOGE("%s : p_get_dmp_address is NULL\n", __func__);
+        return false;
     }
 
-    memAddr = sGetAddress(key);
+    memAddr = p_get_dmp_address(key);
     if (memAddr >= 0xffff) {
         MPL_LOGV("inv_set_mpu_memory unsupported key\n");
-        return FALSE;
+        return false;
     }
 
-    return TRUE;
+    return true;
 }
 
 /**
@@ -145,8 +119,9 @@ uint_fast8_t inv_dmpkey_supported(unsigned short key)
  *  @param  length  Number of bytes to read.
  *  @param  buffer  Result for data.
  *
- *  @return INV_SUCCESS if the command is successful, INV_ERROR otherwise. The key
- *          not corresponding to a memory address will result in INV_ERROR.
+ *  @return INV_SUCCESS if the command is successful, INV_ERROR otherwise.
+ *          The key not corresponding to a memory address will result in
+ *          INV_ERROR.
  *  @endif
  */
 inv_error_t inv_get_mpu_memory_original(unsigned short key,
@@ -155,16 +130,17 @@ inv_error_t inv_get_mpu_memory_original(unsigned short key,
 {
     unsigned short offset;
 
-    if (sGetAddress == NULL) {
+    if (p_get_dmp_address == NULL) {
         return INV_ERROR_NOT_OPENED;
     }
 
-    offset = sGetAddress(key);
-    if (offset >= localDmpMemorySize || (offset + length) > localDmpMemorySize) {
+    offset = p_get_dmp_address(key);
+    if (offset >= g_original_ram.length ||
+        (offset + length) > (g_original_ram.length)) {
         return INV_ERROR_INVALID_PARAMETER;
     }
 
-    memcpy(buffer, &localDmpMemory[offset], length);
+    memcpy(buffer, &g_original_ram.ram[offset], length);
 
     return INV_SUCCESS;
 }
@@ -172,11 +148,11 @@ inv_error_t inv_get_mpu_memory_original(unsigned short key,
 unsigned short inv_dl_get_address(unsigned short key)
 {
     unsigned short offset;
-    if (sGetAddress == NULL) {
+    if (p_get_dmp_address == NULL) {
         return INV_ERROR_NOT_OPENED;
     }
 
-    offset = sGetAddress(key);
+    offset = p_get_dmp_address(key);
     return offset;
 }
 
@@ -192,22 +168,27 @@ unsigned short inv_dl_get_address(unsigned short key)
  *              the serial handle.
  *  @return INV_SUCCESS if successful, a non-zero error code otherwise.
  */
-inv_error_t inv_dl_open(void *mlslHandle)
+inv_error_t inv_dl_open(void *mlsl_handle)
 {
     inv_error_t result;
-    memset(&mldlCfg, 0, sizeof(mldlCfg));
-    memset(intTrigger, INT_CLEAR, sizeof(intTrigger));
+    memset(g_int_trigger, INT_CLEAR, sizeof(g_int_trigger));
 
-    sMLSLHandle = mlslHandle;
+    g_mlsl_handle = mlsl_handle;
+    result = inv_mldl_cfg_init(&g_mldl_cfg);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        inv_mldl_cfg_exit(&g_mldl_cfg);
+        return result;
+    }
 
-    mldlCfg.addr  = 0x68; /* default incase the driver doesn't set it */
-    mldlCfg.accel = &gAccel;
-    mldlCfg.compass = &gCompass;
-    mldlCfg.pressure = &gPressure;
-    mldlCfg.pdata = &gPdata;
+    result = (inv_error_t) inv_mpu_open(
+        g_mldl_cfg, g_mlsl_handle,
+        g_mlsl_handle, g_mlsl_handle, g_mlsl_handle);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        inv_mldl_cfg_exit(&g_mldl_cfg);
+    }
 
-    result = (inv_error_t) inv_mpu_open(&mldlCfg, sMLSLHandle,
-                                        sMLSLHandle, sMLSLHandle, sMLSLHandle);
     return result;
 }
 
@@ -221,19 +202,20 @@ inv_error_t inv_dl_close(void)
     INVENSENSE_FUNC_START;
     inv_error_t result = INV_SUCCESS;
 
-    result = (inv_error_t) inv_mpu_suspend(&mldlCfg,
-                                           sMLSLHandle,
-                                           sMLSLHandle,
-                                           sMLSLHandle,
-                                           sMLSLHandle, 
+    result = (inv_error_t) inv_mpu_suspend(g_mldl_cfg,
+                                           g_mlsl_handle,
+                                           g_mlsl_handle,
+                                           g_mlsl_handle,
+                                           g_mlsl_handle,
                                            INV_ALL_SENSORS);
 
-    result = (inv_error_t) inv_mpu_close(&mldlCfg, sMLSLHandle,
-                                         sMLSLHandle, sMLSLHandle, sMLSLHandle);
+    result = (inv_error_t) inv_mpu_close(
+        g_mldl_cfg, g_mlsl_handle,
+        g_mlsl_handle, g_mlsl_handle, g_mlsl_handle);
     /* Clear all previous settings */
-    memset(&mldlCfg, 0, sizeof(mldlCfg));
-    sMLSLHandle = NULL;
-    sGetAddress = NULL;
+    inv_mldl_cfg_exit(&g_mldl_cfg);
+    g_mlsl_handle = NULL;
+    p_get_dmp_address = NULL;
     return result;
 }
 
@@ -268,7 +250,7 @@ inv_error_t inv_dl_close(void)
  */
 inv_error_t inv_init_requested_sensors(unsigned long sensors)
 {
-    mldlCfg.requested_sensors = sensors;
+    g_mldl_cfg->inv_mpu_cfg->requested_sensors = sensors;
 
     return INV_SUCCESS;
 }
@@ -305,12 +287,12 @@ inv_error_t inv_dl_start(unsigned long sensors)
     INVENSENSE_FUNC_START;
     inv_error_t result = INV_SUCCESS;
 
-    mldlCfg.requested_sensors = sensors;
-    result = inv_mpu_resume(&mldlCfg,
-                            sMLSLHandle,
-                            sMLSLHandle,
-                            sMLSLHandle,
-                            sMLSLHandle,
+    g_mldl_cfg->inv_mpu_cfg->requested_sensors = sensors;
+    result = inv_mpu_resume(g_mldl_cfg,
+                            g_mlsl_handle,
+                            g_mlsl_handle,
+                            g_mlsl_handle,
+                            g_mlsl_handle,
                             sensors);
     return result;
 }
@@ -348,11 +330,11 @@ inv_error_t inv_dl_stop(unsigned long sensors)
     INVENSENSE_FUNC_START;
     inv_error_t result = INV_SUCCESS;
 
-    result = inv_mpu_suspend(&mldlCfg,
-                             sMLSLHandle,
-                             sMLSLHandle,
-                             sMLSLHandle,
-                             sMLSLHandle,
+    result = inv_mpu_suspend(g_mldl_cfg,
+                             g_mlsl_handle,
+                             g_mlsl_handle,
+                             g_mlsl_handle,
+                             g_mlsl_handle,
                              sensors);
     return result;
 }
@@ -365,7 +347,7 @@ inv_error_t inv_dl_stop(unsigned long sensors)
  */
 struct mldl_cfg *inv_get_dl_config(void)
 {
-    return &mldlCfg;
+    return g_mldl_cfg;
 }
 
 /**
@@ -375,7 +357,7 @@ struct mldl_cfg *inv_get_dl_config(void)
 unsigned char inv_get_mpu_slave_addr(void)
 {
     INVENSENSE_FUNC_START;
-    return mldlCfg.addr;
+    return g_mldl_cfg->mpu_chip_info->addr;
 }
 
 /**
@@ -384,8 +366,8 @@ unsigned char inv_get_mpu_slave_addr(void)
  *          the MPU. The DMP can be enabled or disabled and the start address
  *          can be set.
  *
- * @param   enableRun   Enables the DMP processing if set to TRUE.
- * @param   enableFIFO  Enables DMP output to the FIFO if set to TRUE.
+ * @param   enableRun   Enables the DMP processing if set to true.
+ * @param   enableFIFO  Enables DMP output to the FIFO if set to true.
  * @param   startAddress start address
  *
  * @return  Zero if the command is successful, an error code otherwise.
@@ -395,16 +377,16 @@ inv_error_t inv_get_dl_ctrl_dmp(unsigned char enableRun,
 {
     INVENSENSE_FUNC_START;
 
-    mldlCfg.dmp_enable = enableRun;
-    mldlCfg.fifo_enable = enableFIFO;
-    mldlCfg.gyro_needs_reset = TRUE;
+    g_mldl_cfg->mpu_gyro_cfg->dmp_enable = enableRun;
+    g_mldl_cfg->mpu_gyro_cfg->fifo_enable = enableFIFO;
+    g_mldl_cfg->inv_mpu_state->status |= MPU_GYRO_NEEDS_CONFIG;
 
     return INV_SUCCESS;
 }
 
 /**
- * @brief   inv_get_dl_cfg_int configures the interrupt function on the specified pin.
- *          The basic interrupt signal characteristics can be set
+ * @brief   inv_set_dl_cfg_int configures the interrupt function on the
+ *          specified pin. The basic interrupt signal characteristics can be set
  *          (i.e. active high/low, open drain/push pull, etc.) and the
  *          triggers can be set.
  *          Currently only INTPIN_MPU is supported.
@@ -418,25 +400,24 @@ inv_error_t inv_get_dl_ctrl_dmp(unsigned char enableRun,
  *
  * @return  Zero if the command is successful, an error code otherwise.
 */
-inv_error_t inv_get_dl_cfg_int(unsigned char triggers)
+inv_error_t inv_set_dl_cfg_int(unsigned char triggers)
 {
     inv_error_t result = INV_SUCCESS;
 
-#if defined CONFIG_MPU_SENSORS_MPU3050
-    /* Mantis has 8 bits of interrupt config bits */
-    if (triggers & !(BIT_MPU_RDY_EN | BIT_DMP_INT_EN | BIT_RAW_RDY_EN)) {
+    /* MPU6050 has 8 bits of interrupt config bits */
+    if (triggers & ~(BIT_MPU_RDY_EN | BIT_DMP_INT_EN | BIT_RAW_RDY_EN)) {
         return INV_ERROR_INVALID_PARAMETER;
     }
-#endif
 
-    mldlCfg.int_config = triggers;
-    if (!mldlCfg.gyro_is_suspended) {
-        result = inv_serial_single_write(sMLSLHandle, mldlCfg.addr,
-                                         MPUREG_INT_CFG,
-                                         (mldlCfg.int_config | mldlCfg.pdata->
-                                          int_config));
+    g_mldl_cfg->mpu_gyro_cfg->int_config = triggers;
+    if (!(g_mldl_cfg->inv_mpu_state->status & MPU_DEVICE_IS_SUSPENDED)) {
+        result = inv_serial_single_write(
+            g_mlsl_handle, g_mldl_cfg->mpu_chip_info->addr,
+            MPUREG_INT_CFG,
+            (g_mldl_cfg->mpu_gyro_cfg->int_config |
+             g_mldl_cfg->pdata->int_config));
     } else {
-        mldlCfg.gyro_needs_reset = TRUE;
+        g_mldl_cfg->inv_mpu_state->status |= MPU_GYRO_NEEDS_CONFIG;
     }
 
     return result;
@@ -484,9 +465,9 @@ inv_error_t inv_dl_cfg_sampling(unsigned char lpf, unsigned char divider)
         return INV_ERROR_INVALID_PARAMETER;
     }
 
-    mldlCfg.lpf = lpf;
-    mldlCfg.divider = divider;
-    mldlCfg.gyro_needs_reset = TRUE;
+    g_mldl_cfg->mpu_gyro_cfg->lpf = lpf;
+    g_mldl_cfg->mpu_gyro_cfg->divider = divider;
+    g_mldl_cfg->inv_mpu_state->status |= MPU_GYRO_NEEDS_CONFIG;
 
     return INV_SUCCESS;
 }
@@ -509,13 +490,13 @@ inv_error_t inv_dl_cfg_sampling(unsigned char lpf, unsigned char divider)
 inv_error_t inv_set_full_scale(float fullScale)
 {
     if (fullScale == 250.f)
-        mldlCfg.full_scale = MPU_FS_250DPS;
+        g_mldl_cfg->mpu_gyro_cfg->full_scale = MPU_FS_250DPS;
     else if (fullScale == 500.f)
-        mldlCfg.full_scale = MPU_FS_500DPS;
+        g_mldl_cfg->mpu_gyro_cfg->full_scale = MPU_FS_500DPS;
     else if (fullScale == 1000.f)
-        mldlCfg.full_scale = MPU_FS_1000DPS;
+        g_mldl_cfg->mpu_gyro_cfg->full_scale = MPU_FS_1000DPS;
     else if (fullScale == 2000.f)
-        mldlCfg.full_scale = MPU_FS_2000DPS;
+        g_mldl_cfg->mpu_gyro_cfg->full_scale = MPU_FS_2000DPS;
     else {                      // not a valid setting
         MPL_LOGE("Invalid full scale range specification for gyros : %f\n",
                  fullScale);
@@ -523,7 +504,7 @@ inv_error_t inv_set_full_scale(float fullScale)
             ("\tAvailable values : +/- 250 dps, +/- 500 dps, +/- 1000 dps, +/- 2000 dps\n");
         return INV_ERROR_INVALID_PARAMETER;
     }
-    mldlCfg.gyro_needs_reset = TRUE;
+    g_mldl_cfg->inv_mpu_state->status |= MPU_GYRO_NEEDS_CONFIG;
 
     return INV_SUCCESS;
 }
@@ -544,8 +525,8 @@ inv_error_t inv_set_external_sync(unsigned char extSync)
     if (extSync >= NUM_MPU_EXT_SYNC) {
         return INV_ERROR_INVALID_PARAMETER;
     }
-    mldlCfg.ext_sync = extSync;
-    mldlCfg.gyro_needs_reset = TRUE;
+    g_mldl_cfg->mpu_gyro_cfg->ext_sync = extSync;
+    g_mldl_cfg->inv_mpu_state->status |= MPU_GYRO_NEEDS_CONFIG;
 
     return INV_SUCCESS;
 }
@@ -554,7 +535,7 @@ inv_error_t inv_set_ignore_system_suspend(unsigned char ignore)
 {
     INVENSENSE_FUNC_START;
 
-    mldlCfg.ignore_system_suspend = ignore;
+    g_mldl_cfg->inv_mpu_cfg->ignore_system_suspend = ignore;
 
     return INV_SUCCESS;
 }
@@ -594,8 +575,8 @@ inv_error_t inv_clock_source(unsigned char clkSource)
         return INV_ERROR_INVALID_PARAMETER;
     }
 
-    mldlCfg.clk_src = clkSource;
-    mldlCfg.gyro_needs_reset = TRUE;
+    g_mldl_cfg->mpu_gyro_cfg->clk_src = clkSource;
+    g_mldl_cfg->inv_mpu_state->status |= MPU_GYRO_NEEDS_CONFIG;
 
     return INV_SUCCESS;
 }
@@ -612,62 +593,34 @@ inv_error_t inv_set_offsetTC(const unsigned char *tc)
     int ii;
     inv_error_t result;
 
-    for (ii = 0; ii < ARRAY_SIZE(mldlCfg.offset_tc); ii++) {
-        mldlCfg.offset_tc[ii] = tc[ii];
+    for (ii = 0; ii < ARRAY_SIZE(g_mldl_cfg->mpu_offsets->tc); ii++) {
+        g_mldl_cfg->mpu_offsets->tc[ii] = tc[ii];
     }
 
-    if (!mldlCfg.gyro_is_suspended) {
-#ifdef CONFIG_MPU_SENSORS_MPU3050
-        result = inv_serial_single_write(sMLSLHandle, mldlCfg.addr,
-                                         MPUREG_XG_OFFS_TC, tc[0]);
+    if (!(g_mldl_cfg->inv_mpu_state->status & MPU_DEVICE_IS_SUSPENDED)) {
+        result = inv_serial_single_write(
+            g_mlsl_handle, g_mldl_cfg->mpu_chip_info->addr,
+            MPUREG_XG_OFFS_TC, tc[0]);
         if (result) {
             LOG_RESULT_LOCATION(result);
             return result;
         }
-        result = inv_serial_single_write(sMLSLHandle, mldlCfg.addr,
-                                         MPUREG_YG_OFFS_TC, tc[1]);
+        result = inv_serial_single_write(
+            g_mlsl_handle, g_mldl_cfg->mpu_chip_info->addr,
+            MPUREG_YG_OFFS_TC, tc[1]);
         if (result) {
             LOG_RESULT_LOCATION(result);
             return result;
         }
-        result = inv_serial_single_write(sMLSLHandle, mldlCfg.addr,
-                                         MPUREG_ZG_OFFS_TC, tc[2]);
+        result = inv_serial_single_write(
+            g_mlsl_handle, g_mldl_cfg->mpu_chip_info->addr,
+            MPUREG_ZG_OFFS_TC, tc[2]);
         if (result) {
             LOG_RESULT_LOCATION(result);
             return result;
         }
-#else
-        unsigned char reg;
-        result = inv_serial_single_write(sMLSLHandle, mldlCfg.addr,
-                                         MPUREG_XG_OFFS_TC,
-                                         ((mldlCfg.offset_tc[0] << 1)
-                                          & BITS_XG_OFFS_TC));
-        if (result) {
-            LOG_RESULT_LOCATION(result);
-            return result;
-        }
-        reg = ((mldlCfg.offset_tc[1] << 1) & BITS_YG_OFFS_TC);
-#ifdef CONFIG_MPU_SENSORS_MPU6050B1
-        if (mldlCfg.pdata->level_shifter)
-            reg |= BIT_I2C_MST_VDDIO;
-#endif
-        result = inv_serial_single_write(sMLSLHandle, mldlCfg.addr,
-                                         MPUREG_YG_OFFS_TC, reg);
-        if (result) {
-            LOG_RESULT_LOCATION(result);
-            return result;
-        }
-        result = inv_serial_single_write(sMLSLHandle, mldlCfg.addr,
-                                         MPUREG_ZG_OFFS_TC,
-                                         ((mldlCfg.offset_tc[2] << 1)
-                                          & BITS_ZG_OFFS_TC));
-        if (result) {
-            LOG_RESULT_LOCATION(result);
-            return result;
-        }
-#endif
     } else {
-        mldlCfg.gyro_needs_reset = TRUE;
+        g_mldl_cfg->inv_mpu_state->status |= MPU_GYRO_NEEDS_CONFIG;
     }
     return INV_SUCCESS;
 }
@@ -686,25 +639,32 @@ inv_error_t inv_set_offset(const short *offset)
     int ii;
     long sf;
 
-    sf = (2000L * 131) / mldlCfg.gyro_sens_trim;
-    for (ii = 0; ii < ARRAY_SIZE(mldlCfg.offset); ii++) {
+    MPL_LOGV("%s(%04x, %04x, %04x); from %04x, %04x %04x\n", __func__,
+             offset[0], offset[1], offset[2],
+             g_mldl_cfg->mpu_offsets->gyro[0],
+             g_mldl_cfg->mpu_offsets->gyro[1],
+             g_mldl_cfg->mpu_offsets->gyro[2]);
+
+    sf = (2000L * 131) / g_mldl_cfg->mpu_chip_info->gyro_sens_trim;
+    for (ii = 0; ii < ARRAY_SIZE(g_mldl_cfg->mpu_offsets->gyro); ii++) {
         // Record the bias in the units the register uses
-        mldlCfg.offset[ii] = offset[ii];
+        g_mldl_cfg->mpu_offsets->gyro[ii] = offset[ii];
         // Convert the bias to 1 dps = 1<<16
-        inv_obj.gyro_bias[ii] = -offset[ii] * sf;
+        inv_obj.gyro->bias[ii] = -offset[ii] * sf;
         regs[1 + ii * 2] = (unsigned char)(offset[ii] >> 8) & 0xff;
         regs[1 + ii * 2 + 1] = (unsigned char)(offset[ii] & 0xff);
     }
 
-    if (!mldlCfg.gyro_is_suspended) {
+    if (!(g_mldl_cfg->inv_mpu_state->status & MPU_DEVICE_IS_SUSPENDED)) {
         regs[0] = MPUREG_X_OFFS_USRH;
-        result = inv_serial_write(sMLSLHandle, mldlCfg.addr, 7, regs);
+        result = inv_serial_write(g_mlsl_handle,
+                                  g_mldl_cfg->mpu_chip_info->addr, 7, regs);
         if (result) {
             LOG_RESULT_LOCATION(result);
             return result;
         }
     } else {
-        mldlCfg.gyro_needs_reset = TRUE;
+        g_mldl_cfg->inv_mpu_state->status |= MPU_GYRO_NEEDS_CONFIG;
     }
     return INV_SUCCESS;
 }
@@ -740,12 +700,22 @@ inv_get_mpu_memory_one_bank(unsigned char bank,
         return INV_ERROR_INVALID_PARAMETER;
     }
 
-    if (mldlCfg.gyro_is_suspended) {
-        memcpy(buffer, &mldlCfg.ram[bank][memAddr], length);
-        result = INV_SUCCESS;
+    if (g_mldl_cfg->inv_mpu_state->status & MPU_DEVICE_IS_SUSPENDED) {
+        if (INV_CACHE_DMP == 0) {
+            MPL_LOGE("INV_CACHE_DMP == 0:"
+                     " tried to inv_get_mpu_memory while device suspended\n");
+            result = INV_ERROR_SERIAL_WRITE;
+        } else {
+            memcpy(
+                buffer,
+                &g_mldl_cfg->mpu_ram->ram[bank * MPU_MEM_BANK_SIZE + memAddr],
+                length);
+            result = INV_SUCCESS;
+        }
     } else {
-        result = inv_serial_read_mem(sMLSLHandle, mldlCfg.addr,
-                                     ((bank << 8) | memAddr), length, buffer);
+        result = inv_serial_read_mem(
+            g_mlsl_handle, g_mldl_cfg->mpu_chip_info->addr,
+            ((bank << 8) | memAddr), length, buffer);
         if (result) {
             LOG_RESULT_LOCATION(result);
             return result;
@@ -779,24 +749,36 @@ inv_error_t inv_set_mpu_memory_one_bank(unsigned char bank,
                                         const unsigned char *buffer)
 {
     inv_error_t result = INV_SUCCESS;
-    int different;
+    int different = 1;
 
     if ((bank >= MPU_MEM_NUM_RAM_BANKS) || (memAddr >= MPU_MEM_BANK_SIZE) ||
         ((memAddr + length) > MPU_MEM_BANK_SIZE) || (NULL == buffer)) {
         return INV_ERROR_INVALID_PARAMETER;
     }
 
-    different = memcmp(&mldlCfg.ram[bank][memAddr], buffer, length);
-    memcpy(&mldlCfg.ram[bank][memAddr], buffer, length);
-    if (!mldlCfg.gyro_is_suspended) {
-        result = inv_serial_write_mem(sMLSLHandle, mldlCfg.addr,
-                                      ((bank << 8) | memAddr), length, buffer);
+    if (INV_CACHE_DMP != 0) {
+        different = memcmp(
+            &g_mldl_cfg->mpu_ram->ram[bank * MPU_MEM_BANK_SIZE + memAddr],
+            buffer, length);
+        memcpy(&g_mldl_cfg->mpu_ram->ram[bank * MPU_MEM_BANK_SIZE + memAddr],
+               buffer, length);
+    }
+
+    if (!(g_mldl_cfg->inv_mpu_state->status & MPU_DEVICE_IS_SUSPENDED)) {
+        result = inv_serial_write_mem(
+            g_mlsl_handle, g_mldl_cfg->mpu_chip_info->addr,
+            ((bank << 8) | memAddr), length, buffer);
         if (result) {
             LOG_RESULT_LOCATION(result);
             return result;
         }
     } else if (different) {
-        mldlCfg.gyro_needs_reset = TRUE;
+        g_mldl_cfg->inv_mpu_state->status |= MPU_GYRO_NEEDS_CONFIG;
+        if (INV_CACHE_DMP == 0) {
+            MPL_LOGE("INV_CACHE_DMP == 0:"
+                     " tried to inv_set_mpu_memory while device suspended\n");
+            result = INV_ERROR_SERIAL_WRITE;
+        }
     }
 
     return result;
@@ -826,11 +808,11 @@ inv_error_t inv_get_mpu_memory(unsigned short key,
     inv_error_t result;
     unsigned short memAddr;
 
-    if (sGetAddress == NULL) {
+    if (p_get_dmp_address == NULL) {
         return INV_ERROR_NOT_OPENED;
     }
 
-    memAddr = sGetAddress(key);
+    memAddr = p_get_dmp_address(key);
     if (memAddr >= 0xffff)
         return INV_ERROR_FEATURE_NOT_IMPLEMENTED;
     bank = memAddr >> 8;        // Get Bank
@@ -884,11 +866,11 @@ inv_error_t inv_set_mpu_memory(unsigned short key,
     unsigned short memAddr;
     unsigned char bank;
 
-    if (sGetAddress == NULL) {
-        MPL_LOGE("MLDSetMemoryMPU sGetAddress is NULL\n");
+    if (p_get_dmp_address == NULL) {
+        MPL_LOGE("%s : p_get_dmp_address is NULL\n", __func__);
         return INV_ERROR_INVALID_MODULE;
     }
-    memAddr = sGetAddress(key);
+    memAddr = p_get_dmp_address(key);
 
     if (memAddr >= 0xffff) {
         MPL_LOGE("inv_set_mpu_memory unsupported key\n");
@@ -937,31 +919,13 @@ inv_error_t inv_load_dmp(const unsigned char *buffer,
     INVENSENSE_FUNC_START;
 
     inv_error_t result = INV_SUCCESS;
-    unsigned short toWrite;
-    unsigned short memAddr = 0;
-    localDmpMemory = buffer;
-    localDmpMemorySize = length;
+    g_original_ram.ram = (unsigned char *)buffer;
+    g_original_ram.length = length;
 
-    mldlCfg.dmp_cfg1 = (config >> 8);
-    mldlCfg.dmp_cfg2 = (config & 0xff);
+    g_mldl_cfg->mpu_gyro_cfg->dmp_cfg1 = (config >> 8);
+    g_mldl_cfg->mpu_gyro_cfg->dmp_cfg2 = (config & 0xff);
 
-    while (length > 0) {
-        toWrite = length;
-        if (toWrite > MAX_LOAD_WRITE_SIZE)
-            toWrite = MAX_LOAD_WRITE_SIZE;
-
-        result =
-            inv_set_mpu_memory_one_bank(memAddr >> 8, memAddr & 0xff, toWrite,
-                                        buffer);
-        if (result) {
-            LOG_RESULT_LOCATION(result);
-            return result;
-        }
-
-        buffer += toWrite;
-        memAddr += toWrite;
-        length -= toWrite;
-    }
+    result = inv_mpu_set_firmware(g_mldl_cfg, g_mlsl_handle, buffer, length);
 
     return result;
 }
@@ -973,7 +937,7 @@ inv_error_t inv_load_dmp(const unsigned char *buffer,
  */
 unsigned char inv_get_silicon_rev(void)
 {
-    return mldlCfg.silicon_revision;
+    return g_mldl_cfg->mpu_chip_info->silicon_revision;
 }
 
 /**
@@ -983,7 +947,7 @@ unsigned char inv_get_silicon_rev(void)
  */
 unsigned char inv_get_product_rev(void)
 {
-    return mldlCfg.product_revision;
+    return g_mldl_cfg->mpu_chip_info->product_revision;
 }
 
 /*******************************************************************************
@@ -1018,7 +982,7 @@ inv_error_t inv_get_interrupt_status(unsigned char intPin,
 
     case INTPIN_MPU:
             /*---- return the MPU interrupt status ----*/
-        result = inv_serial_read(sMLSLHandle, mldlCfg.addr,
+        result = inv_serial_read(g_mlsl_handle, g_mldl_cfg->mpu_chip_info->addr,
                                  MPUREG_INT_STATUS, 1, status);
         break;
 
@@ -1041,7 +1005,7 @@ inv_error_t inv_get_interrupt_status(unsigned char intPin,
 unsigned char inv_get_interrupt_trigger(unsigned char srcIndex)
 {
     INVENSENSE_FUNC_START;
-    return intTrigger[srcIndex];
+    return g_int_trigger[srcIndex];
 }
 
 /**
@@ -1053,7 +1017,7 @@ unsigned char inv_get_interrupt_trigger(unsigned char srcIndex)
 void inv_clear_interrupt_trigger(unsigned char srcIndex)
 {
     INVENSENSE_FUNC_START;
-    intTrigger[srcIndex] = 0;
+    g_int_trigger[srcIndex] = 0;
 }
 
 /**
@@ -1076,7 +1040,7 @@ inv_error_t inv_interrupt_handler(unsigned char intSource)
     }
 
     /*---- save source of interrupt ----*/
-    intTrigger[intSource] = INT_TRIGGERED;
+    g_int_trigger[intSource] = INT_TRIGGERED;
 
 #ifdef ML_USE_DMP_SIM
     if (intSource == INTSRC_AUX1 || intSource == INTSRC_TIMER) {

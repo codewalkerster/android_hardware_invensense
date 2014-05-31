@@ -1,37 +1,25 @@
 /*
  $License:
-   Copyright 2011 InvenSense, Inc.
-
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
-
- http://www.apache.org/licenses/LICENSE-2.0
-
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
-  $
+    Copyright (C) 2011 InvenSense Corporation, All Rights Reserved.
+ $
  */
 /*******************************************************************************
  *
- * $Id: accel.c 4595 2011-01-25 01:43:03Z mcaramello $
+ * $Id: accel.c 5873 2011-08-11 03:13:48Z mcaramello $
  *
  *******************************************************************************/
 
-/** 
- *  @defgroup ACCELDL 
+/**
+ *  @defgroup ACCELDL
  *  @brief  Motion Library - Accel Driver Layer.
  *          Provides the interface to setup and handle an accel
- *          connected to either the primary or the seconday I2C interface 
+ *          connected to either the primary or the seconday I2C interface
  *          of the gyroscope.
  *
  *  @{
  *      @file   accel.c
  *      @brief  Accel setup and handling methods.
-**/
+ */
 
 /* ------------------ */
 /* - Include Files. - */
@@ -75,7 +63,7 @@
 /* - Functions. - */
 /* -------------- */
 
-/** 
+/**
  *  @brief  Used to determine if an accel is configured and
  *          used by the MPL.
  *  @return INV_SUCCESS if the accel is present.
@@ -84,12 +72,12 @@ unsigned char inv_accel_present(void)
 {
     INVENSENSE_FUNC_START;
     struct mldl_cfg *mldl_cfg = inv_get_dl_config();
-    if (NULL != mldl_cfg->accel &&
-        NULL != mldl_cfg->accel->resume &&
-        mldl_cfg->requested_sensors & INV_THREE_AXIS_ACCEL)
-        return TRUE;
+    if (mldl_cfg->slave[EXT_SLAVE_TYPE_ACCEL] &&
+        mldl_cfg->slave[EXT_SLAVE_TYPE_ACCEL]->resume &&
+        mldl_cfg->inv_mpu_cfg->requested_sensors & INV_THREE_AXIS_ACCEL)
+        return true;
     else
-        return FALSE;
+        return false;
 }
 
 /**
@@ -100,8 +88,8 @@ unsigned char inv_get_slave_addr(void)
 {
     INVENSENSE_FUNC_START;
     struct mldl_cfg *mldl_cfg = inv_get_dl_config();
-    if (NULL != mldl_cfg->pdata)
-        return mldl_cfg->pdata->accel.address;
+    if (mldl_cfg->pdata_slave[EXT_SLAVE_TYPE_ACCEL])
+        return mldl_cfg->pdata_slave[EXT_SLAVE_TYPE_ACCEL]->address;
     else
         return 0;
 }
@@ -114,8 +102,8 @@ unsigned short inv_get_accel_id(void)
 {
     INVENSENSE_FUNC_START;
     struct mldl_cfg *mldl_cfg = inv_get_dl_config();
-    if (NULL != mldl_cfg->accel) {
-        return mldl_cfg->accel->id;
+    if (mldl_cfg->slave[EXT_SLAVE_TYPE_ACCEL]) {
+        return mldl_cfg->slave[EXT_SLAVE_TYPE_ACCEL]->id;
     }
     return ID_INVALID;
 }
@@ -134,13 +122,20 @@ inv_error_t inv_get_accel_data(long *data)
     unsigned char raw_data[2 * ACCEL_NUM_AXES];
     long tmp[ACCEL_NUM_AXES];
     int ii;
-    signed char *mtx = mldl_cfg->pdata->accel.orientation;
-    char accelId = mldl_cfg->accel->id;
+    signed char *mtx;
+    char accel_id;
 
     if (NULL == data)
         return INV_ERROR_INVALID_PARAMETER;
 
-    if (mldl_cfg->accel->read_len > sizeof(raw_data))
+    if (!inv_accel_present()) {
+        LOG_RESULT_LOCATION(INV_ERROR_INVALID_MODULE);
+        return INV_ERROR_INVALID_MODULE;
+    }
+    mtx = mldl_cfg->pdata_slave[EXT_SLAVE_TYPE_ACCEL]->orientation;
+    accel_id = mldl_cfg->slave[EXT_SLAVE_TYPE_ACCEL]->id;
+
+    if (mldl_cfg->slave[EXT_SLAVE_TYPE_ACCEL]->read_len > sizeof(raw_data))
         return INV_ERROR_ASSERTION_FAILURE;
 
     result = (inv_error_t) inv_mpu_read_accel(mldl_cfg,
@@ -156,18 +151,22 @@ inv_error_t inv_get_accel_data(long *data)
     }
 
     for (ii = 0; ii < ARRAY_SIZE(tmp); ii++) {
-        if (EXT_SLAVE_LITTLE_ENDIAN == mldl_cfg->accel->endian) {
+        if (EXT_SLAVE_LITTLE_ENDIAN ==
+            mldl_cfg->slave[EXT_SLAVE_TYPE_ACCEL]->endian) {
             tmp[ii] = (long)((signed char)raw_data[2 * ii + 1]) * 256;
             tmp[ii] += (long)((unsigned char)raw_data[2 * ii]);
-        } else if ((EXT_SLAVE_BIG_ENDIAN == mldl_cfg->accel->endian) ||
-                   (EXT_SLAVE_FS16_BIG_ENDIAN == mldl_cfg->accel->endian)) {
+        } else if ((EXT_SLAVE_BIG_ENDIAN ==
+                    mldl_cfg->slave[EXT_SLAVE_TYPE_ACCEL]->endian) ||
+                   (EXT_SLAVE_FS16_BIG_ENDIAN ==
+                    mldl_cfg->slave[EXT_SLAVE_TYPE_ACCEL]->endian)) {
             tmp[ii] = (long)((signed char)raw_data[2 * ii]) * 256;
             tmp[ii] += (long)((unsigned char)raw_data[2 * ii + 1]);
-            if (accelId == ACCEL_ID_KXSD9) {
+            if (accel_id == ACCEL_ID_KXSD9) {
                 tmp[ii] = (long)((short)(((unsigned short)tmp[ii])
                                          + ((unsigned short)0x8000)));
             }
-        } else if (EXT_SLAVE_FS8_BIG_ENDIAN == mldl_cfg->accel->endian) {
+        } else if (EXT_SLAVE_FS8_BIG_ENDIAN ==
+                   mldl_cfg->slave[EXT_SLAVE_TYPE_ACCEL]->endian) {
             tmp[ii] = (long)((signed char)raw_data[ii]) * 256;
         } else {
             result = INV_ERROR_FEATURE_NOT_IMPLEMENTED;

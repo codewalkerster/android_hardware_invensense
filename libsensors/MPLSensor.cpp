@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-//#define LOG_NDEBUG 0
-//see also the EXTRA_VERBOSE define, below
+#define LOG_NDEBUG 0
+//see also the EXTRA_VERBOSE define in the MPLSensor.h header file
 
 #include <fcntl.h>
 #include <errno.h>
@@ -26,11 +26,14 @@
 #include <dirent.h>
 #include <stdlib.h>
 #include <sys/select.h>
+#include <sys/syscall.h>
 #include <dlfcn.h>
 #include <pthread.h>
 
 #include <cutils/log.h>
 #include <utils/KeyedVector.h>
+#include <utils/String8.h>
+#include <string.h>
 
 #include "MPLSensor.h"
 
@@ -43,63 +46,35 @@
 #include "ml_stored_data.h"
 #include "mldl_cfg.h"
 #include "mldl.h"
+#include "temp_comp.h"
+#include "mlBiasNoMotion.h"
 
 #include "mpu.h"
-#include "accel.h"
-#include "compass.h"
 #include "kernel/timerirq.h"
 #include "kernel/mpuirq.h"
-#include "kernel/slaveirq.h"
 
 extern "C" {
 #include "mlsupervisor.h"
 }
 
 #include "mlcontrol.h"
-#include "sensor_params.h"
 
-#define EXTRA_VERBOSE (0)
-//#define FUNC_LOG ALOGV("%s", __PRETTY_FUNCTION__)
-#define FUNC_LOG
-#define VFUNC_LOG ALOGV_IF(EXTRA_VERBOSE, "%s", __PRETTY_FUNCTION__)
 /* this mask must turn on only the sensors that are present and managed by the MPL */
 #define ALL_MPL_SENSORS_NP (INV_THREE_AXIS_ACCEL | INV_THREE_AXIS_COMPASS | INV_THREE_AXIS_GYRO)
 
-#define CALL_MEMBER_FN(pobject,ptrToMember)  ((pobject)->*(ptrToMember))
-
-/******************************************/
-
-/* Base values for the sensor list, these need to be in the order defined in MPLSensor.h */
-static struct sensor_t sSensorList[] =
-    { { "MPL Gyroscope", "Invensense", 1,
-         SENSORS_GYROSCOPE_HANDLE,
-         SENSOR_TYPE_GYROSCOPE, 2000.0f, 1.0f, 0.5f, 10000, { } },
-      { "MPL Accelerometer", "Invensense", 1,
-         SENSORS_ACCELERATION_HANDLE,
-         SENSOR_TYPE_ACCELEROMETER, 10240.0f, 1.0f, 0.5f, 10000, { } },
-      { "MPL Magnetic Field", "Invensense", 1,
-         SENSORS_MAGNETIC_FIELD_HANDLE,
-         SENSOR_TYPE_MAGNETIC_FIELD, 10240.0f, 1.0f, 0.5f, 10000, { } },
-      { "MPL Orientation", "Invensense", 1,
-         SENSORS_ORIENTATION_HANDLE,
-         SENSOR_TYPE_ORIENTATION, 360.0f, 1.0f, 9.7f, 10000, { } },
-      { "MPL Rotation Vector", "Invensense", 1,
-         SENSORS_ROTATION_VECTOR_HANDLE,
-         SENSOR_TYPE_ROTATION_VECTOR, 10240.0f, 1.0f, 0.5f, 10000, { } },
-      { "MPL Linear Acceleration", "Invensense", 1,
-         SENSORS_LINEAR_ACCEL_HANDLE,
-         SENSOR_TYPE_LINEAR_ACCELERATION, 10240.0f, 1.0f, 0.5f, 10000, { } },
-      { "MPL Gravity", "Invensense", 1,
-         SENSORS_GRAVITY_HANDLE,
-         SENSOR_TYPE_GRAVITY, 10240.0f, 1.0f, 0.5f, 10000, { } },
-};
-
-static unsigned long long irq_timestamp = 0;
 /* ***************************************************************************
  * MPL interface misc.
  */
-//static pointer to the object that will handle callbacks
-static MPLSensor* gMPLSensor = NULL;
+#ifndef LOGD      
+#define LOGE ALOGE
+#define LOGI ALOGI
+#define LOGV ALOGV
+#define LOGD ALOGD
+#define LOGW ALOGW
+#define LOGE_IF ALOGE_IF
+#define LOGV_IF ALOGV_IF
+#endif
+MPLSensor* MPLSensor::gMPLSensor = NULL;
 
 /* we need to pass some callbacks to the MPL.  The mpl is a C library, so
  * wrappers for the C++ callback implementations are required.
@@ -108,66 +83,160 @@ extern "C" {
 //callback wrappers go here
 void mot_cb_wrapper(uint16_t val)
 {
-    if (gMPLSensor) {
-        gMPLSensor->cbOnMotion(val);
+    if (MPLSensor::gMPLSensor) {
+        MPLSensor::gMPLSensor->cbOnMotion(val);
     }
 }
 
 void procData_cb_wrapper()
 {
-    if(gMPLSensor) {
-        gMPLSensor->cbProcData();
+    if(MPLSensor::gMPLSensor) {
+        MPLSensor::gMPLSensor->cbProcData();
     }
+}
+
+void setCallbackObject(MPLSensor* gbpt)
+{
+    MPLSensor::gMPLSensor = gbpt;
+}
+
+MPLSensor* getCallbackObject() {
+    return MPLSensor::gMPLSensor;
 }
 
 } //end of extern C
 
-void setCallbackObject(MPLSensor* gbpt)
+
+/*****************************************************************************
+ * 9 axis enable/disable class implementation
+ */
+
+NineAxisSensorFusion::NineAxisSensorFusion()
 {
-    gMPLSensor = gbpt;
+    fp_enable_9x_fusion =  NULL;
+    fp_disable_9x_fusion = NULL; 
+    enabled = -1;
 }
 
+NineAxisSensorFusion::~NineAxisSensorFusion()
+{
+    fp_enable_9x_fusion =  NULL;
+    fp_disable_9x_fusion = NULL; 
+    enabled = -1;
+}
+
+void NineAxisSensorFusion::registerEnabler(inv_error_t (*fp_enable_9x_fusion)(void))
+{
+    this->fp_enable_9x_fusion  = fp_enable_9x_fusion;
+    enabled = -1;
+}
+
+void NineAxisSensorFusion::registerDisabler(inv_error_t (*fp_disable_9x_fusion)(void))
+{
+    this->fp_disable_9x_fusion = fp_disable_9x_fusion;
+    enabled = -1;
+}
+
+inv_error_t NineAxisSensorFusion::enable()
+{
+    inv_error_t result = INV_ERROR;
+    /*
+    if (!(inv_get_dl_config()->inv_mpu_cfg->requested_sensors & 
+            INV_THREE_AXIS_COMPASS)) {
+        LOGE("Warning : enable 9 axis sensor fusion aborted - "
+             "compass is OFF in requested_sensors mask\n");
+        return INV_SUCCESS;
+    }
+    */
+    if (enabled == true) {
+        LOGE("Cannot enable 9 axis sensor fusion - already enabled\n");
+        return INV_ERROR;
+    }
+    if (!fp_enable_9x_fusion) {
+        LOGE("Error : enable 9 axis sensor fusion function not registered\n");
+        return INV_ERROR;
+    }
+    result = fp_enable_9x_fusion();
+    if (result) {
+        LOGE("Error while trying to enable 9 axis sensor fusion : %d\n", 
+             result);
+        enabled = false;
+    } else {
+        if (enabled == -1)
+            LOGI("Enabled 9 axis sensor fusion - first time\n");
+        else
+            LOGI("Enabled 9 axis sensor fusion\n");
+        enabled = true;
+    }
+    return result;
+}
+
+inv_error_t NineAxisSensorFusion::disable()
+{
+    inv_error_t result = INV_SUCCESS;
+    /*
+    if (!(inv_get_dl_config()->inv_mpu_cfg->requested_sensors & 
+            INV_THREE_AXIS_COMPASS)) {
+        LOGE("Warning : disable 9 axis sensor fusion aborted - "
+             "compass is OFF in requested_sensors mask\n");
+        return INV_SUCCESS;
+    }
+    */
+    if(enabled == -1) {
+        LOGW("Cannot disable 9 axis sensor fusion - it was NEVER enabled\n");
+        return INV_ERROR;
+    }
+    if (enabled == false) {
+        LOGW("Cannot disable 9 axis sensor fusion - already disabled\n");
+        return INV_ERROR;
+    }
+    if (!fp_disable_9x_fusion) {
+        LOGE("Error : disable 9 axis sensor fusion function not registered\n");
+        return INV_ERROR;
+    }
+    result = fp_disable_9x_fusion();
+    if (result)
+        LOGE("Error while trying to disable 9 axis sensor fusion : %d\n", 
+             result);
+    else
+        LOGI("Disabled 9 axis sensor fusion\n");
+    enabled = false;
+    return result;
+}
 
 /*****************************************************************************
  * sensor class implementation
  */
+  
 
-#define GY_ENABLED ((1<<ID_GY) & enabled_sensors)
-#define A_ENABLED  ((1<<ID_A)  & enabled_sensors)
-#define O_ENABLED  ((1<<ID_O)  & enabled_sensors)
-#define M_ENABLED  ((1<<ID_M)  & enabled_sensors)
-#define LA_ENABLED ((1<<ID_LA) & enabled_sensors)
-#define GR_ENABLED ((1<<ID_GR) & enabled_sensors)
-#define RV_ENABLED ((1<<ID_RV) & enabled_sensors)
-
-MPLSensor::MPLSensor() :
-    SensorBase(NULL, NULL),
-            mMpuAccuracy(0), mNewData(0),
-            mDmpStarted(false),
-            mMasterSensorMask(INV_ALL_SENSORS),
-            mLocalSensorMask(ALL_MPL_SENSORS_NP), mPollTime(-1),
-            mCurFifoRate(-1), mHaveGoodMpuCal(false), mHaveGoodCompassCal(false),
-            mUseTimerIrqAccel(false), mUsetimerIrqCompass(true),
-            mUseTimerirq(false), mSampleCount(0),
-            mEnabled(0), mPendingMask(0)
+MPLSensor::MPLSensor() : SensorBase(NULL, NULL),
+                         mMpuAccuracy(0),
+                         mNewData(0), 
+                         mDmpStarted(false),
+                         mMasterSensorMask(INV_ALL_SENSORS),
+                         mLocalSensorMask(ALL_MPL_SENSORS_NP),
+                         mPollTime(-1),
+                         mCurFifoRate(-1),
+                         mHaveGoodMpuCal(false),
+                         mUseTimerIrqAccel(false),
+                         mUsetimerIrqCompass(true),
+                         mUseTimerirq(false),
+                         mSampleCount(0),
+                         mMplMutex(PTHREAD_MUTEX_INITIALIZER),
+                         mEnabled(0),
+                         mPendingMask(0)
 {
-    FUNC_LOG;
+    VFUNC_LOG;
     inv_error_t rv;
     int mpu_int_fd, i;
     char *port = NULL;
+    unsigned char *ver_str;
 
-    ALOGV_IF(EXTRA_VERBOSE, "MPLSensor constructor: numSensors = %d", numSensors);
-
-    pthread_mutex_init(&mMplMutex, NULL);
+    LOGV_IF(EXTRA_VERBOSE, "MPLSensor constructor : numSensors = %d", numSensors);
 
     mForceSleep = false;
 
-    /* used for identifying whether 9axis is enabled or not             */
-    /* this variable will be changed in initMPL() when libmpl is loaded */
-    /* sensor list will be changed based on this variable               */
-    mNineAxisEnabled = false;
-
-    for (i = 0; i < ARRAY_SIZE(mPollFds); i++) {
+    for (i = 0; i < (int)ARRAY_SIZE(mPollFds); i++) {
         mPollFds[i].fd = -1;
         mPollFds[i].events = 0;
     }
@@ -176,7 +245,7 @@ MPLSensor::MPLSensor() :
 
     mpu_int_fd = open("/dev/mpuirq", O_RDWR);
     if (mpu_int_fd == -1) {
-        ALOGE("could not open the mpu irq device node");
+        LOGE("could not open the mpu irq device node");
     } else {
         fcntl(mpu_int_fd, F_SETFL, O_NONBLOCK);
         //ioctl(mpu_int_fd, MPUIRQ_SET_TIMEOUT, 0);
@@ -187,7 +256,7 @@ MPLSensor::MPLSensor() :
 
     accel_fd = open("/dev/accelirq", O_RDWR);
     if (accel_fd == -1) {
-        ALOGE("could not open the accel irq device node");
+        LOGE("could not open the accel irq device node");
     } else {
         fcntl(accel_fd, F_SETFL, O_NONBLOCK);
         //ioctl(accel_fd, SLAVEIRQ_SET_TIMEOUT, 0);
@@ -198,7 +267,7 @@ MPLSensor::MPLSensor() :
 
     timer_fd = open("/dev/timerirq", O_RDWR);
     if (timer_fd == -1) {
-        ALOGE("could not open the timer irq device node");
+        LOGE("could not open the timer irq device node");
     } else {
         fcntl(timer_fd, F_SETFL, O_NONBLOCK);
         //ioctl(timer_fd, TIMERIRQ_SET_TIMEOUT, 0);
@@ -212,7 +281,7 @@ MPLSensor::MPLSensor() :
     if ((accel_fd == -1) && (timer_fd != -1)) {
         //no accel irq and timer available
         mUseTimerIrqAccel = true;
-        //ALOGD("MPLSensor falling back to timerirq for accel data");
+        LOGD("MPLSensor falling back to timerirq for accel data");
     }
 
     memset(mPendingEvents, 0, sizeof(mPendingEvents));
@@ -268,18 +337,21 @@ MPLSensor::MPLSensor() :
         mDelays[i] = 30000000LLU; // 30 ms by default
 
     if (inv_serial_start(port) != INV_SUCCESS) {
-        ALOGE("Fatal Error : could not open MPL serial interface");
+        LOGE("Fatal Error : could not open MPL serial interface");
     }
+    
+    inv_get_version(&ver_str);
+    LOGI("%s\n", (char *)ver_str);
 
     //initialize library parameters
     initMPL();
 
     //setup the FIFO contents
-    setupFIFO();
+    enableFIFO();
 
     //we start the motion processing only when a sensor is enabled...
     //rv = inv_dmp_start();
-    //ALOGE_IF(rv != INV_SUCCESS, "Fatal error: could not start the DMP correctly. (code = %d)\n", rv);
+    //LOGE_IF(rv != INV_SUCCESS, "Fatal error: could not start the DMP correctly. (code = %d)\n", rv);
     //dmp_started = true;
 
     pthread_mutex_unlock(&mMplMutex);
@@ -288,21 +360,20 @@ MPLSensor::MPLSensor() :
 
 MPLSensor::~MPLSensor()
 {
-    FUNC_LOG;
+    VFUNC_LOG;
     pthread_mutex_lock(&mMplMutex);
     if (inv_dmp_stop() != INV_SUCCESS) {
-        ALOGW("Error: could not stop the DMP correctly.\n");
+        LOGD("Error: could not stop the DMP correctly.\n");
     }
 
     if (inv_dmp_close() != INV_SUCCESS) {
-        ALOGW("Error: could not close the DMP");
+        LOGD("Error: could not close the DMP");
     }
 
     if (inv_serial_stop() != INV_SUCCESS) {
-        ALOGW("Error : could not close the serial port");
+        LOGD("Error : could not close the serial port");
     }
     pthread_mutex_unlock(&mMplMutex);
-    pthread_mutex_destroy(&mMplMutex);
 }
 
 /* clear any data from our various filehandles */
@@ -321,24 +392,28 @@ void MPLSensor::clearIrqData(bool* irq_set)
             nread = read(cur_fd, &irqdata, sizeof(irqdata));
             if (nread > 0) {
                 irq_set[i] = true;
-                irq_timestamp = irqdata.irqtime;
-                //ALOGV_IF(EXTRA_VERBOSE, "irq: %d %d (%d)", i, irqdata.interruptcount, j++);
+                //LOGV_IF(EXTRA_VERBOSE, "irq: %d %d (%d)", i, irqdata.interruptcount, j++);
             }
         }
         mPollFds[i].revents = 0;
     }
 }
 
-/* set the power states of the various sensors based on the bits set in the
- * enabled_sensors parameter.
- * this function modifies globalish state variables.  It must be called with the mMplMutex held. */
-void MPLSensor::setPowerStates(int enabled_sensors)
+bool MPLSensor::needDMPStop() 
+{ 
+    return mDmpStarted;
+}
+
+#define GY_ENABLED ((1<<ID_GY) & enabled_sensors)
+#define A_ENABLED  ((1<<ID_A)  & enabled_sensors)
+#define O_ENABLED  ((1<<ID_O)  & enabled_sensors)
+#define M_ENABLED  ((1<<ID_M)  & enabled_sensors)
+#define LA_ENABLED ((1<<ID_LA) & enabled_sensors)
+#define GR_ENABLED ((1<<ID_GR) & enabled_sensors)
+#define RV_ENABLED ((1<<ID_RV) & enabled_sensors)
+
+void MPLSensor::computeLocalSensorMask(int enabled_sensors)
 {
-    FUNC_LOG;
-    bool irq_set[5] = { false, false, false, false, false };
-
-    //ALOGV(" setPowerStates: %d dmp_started: %d", enabled_sensors, mDmpStarted);
-
     do {
 
         if (LA_ENABLED || GR_ENABLED || RV_ENABLED || O_ENABLED) {
@@ -370,79 +445,144 @@ void MPLSensor::setPowerStates(int enabled_sensors)
         }
 
     } while (0);
+}
 
-    //record the new sensor state
-    inv_error_t rv;
+/* set the power states of the various sensors based on the bits set in the
+ * enabled_sensors parameter.
+ * this function modifies globalish state variables.  It must be called with the mMplMutex held. */
+void MPLSensor::setPowerStates(int enabled_sensors)
+{
+    VFUNC_LOG;
+    bool irq_set[5] = {false, false, false, false, false};
+    unsigned long sen_mask;
+    bool changing_sensors;
+    bool restart;
+    inv_error_t rv;    // record the new sensor state
 
-    long sen_mask = mLocalSensorMask & mMasterSensorMask;
+    LOGV("enabled_sensors: %d dmp_started: %d", enabled_sensors, mDmpStarted);
 
-    bool changing_sensors = ((inv_get_dl_config()->requested_sensors
-            != sen_mask) && (sen_mask != 0));
-    bool restart = (!mDmpStarted) && (sen_mask != 0);
+    /* NOTE : 
+       this method changes the mLocalSensorMask that is used just after */
+    computeLocalSensorMask(enabled_sensors);
+    /* record the new sensor state */
+    sen_mask = mLocalSensorMask & mMasterSensorMask;
 
-    if (changing_sensors || restart) {
+    changing_sensors = (
+        (inv_get_dl_config()->inv_mpu_cfg->requested_sensors != sen_mask) 
+            && (sen_mask != 0));
+    restart = (!mDmpStarted) && (sen_mask != 0);
 
-        ALOGV_IF(EXTRA_VERBOSE, "cs:%d rs:%d ", changing_sensors, restart);
+    if (needStateChange(changing_sensors, restart)) {
 
-        if (mDmpStarted) {
+        LOGV_IF(EXTRA_VERBOSE, "cs:%d rs:%d ", changing_sensors, restart);
+
+        if (needDMPStop()) {
+            nineAxisSF.disable();
             inv_dmp_stop();
             clearIrqData(irq_set);
             mDmpStarted = false;
         }
 
-        if (sen_mask != inv_get_dl_config()->requested_sensors) {
-            //ALOGV("setPowerStates: %lx", sen_mask);
+        if (sen_mask != inv_get_dl_config()->inv_mpu_cfg->requested_sensors) {
+            LOGV("calling inv_set_mpu_sensors(%06lx)", sen_mask);
             rv = inv_set_mpu_sensors(sen_mask);
-            ALOGE_IF(rv != INV_SUCCESS,
-                    "error: unable to set MPL sensor power states (sens=%ld retcode = %d)",
-                    sen_mask, rv);
+            LOGE_IF(rv != INV_SUCCESS,
+                    "error: unable to set MPL sensor power states "
+                    "(sens = %ld, retcode = %d)", sen_mask, rv);
         }
+
+        enableFeatures();
 
         if (((mUsetimerIrqCompass && (sen_mask == INV_THREE_AXIS_COMPASS))
                 || (mUseTimerIrqAccel && (sen_mask & INV_THREE_AXIS_ACCEL)))
                 && ((sen_mask & INV_DMP_PROCESSOR) == 0)) {
-            ALOGV_IF(EXTRA_VERBOSE, "Allowing TimerIRQ");
+            LOGV_IF(EXTRA_VERBOSE, "Allowing TimerIRQ");
             mUseTimerirq = true;
         } else {
             if (mUseTimerirq) {
                 ioctl(mIrqFds.valueFor(TIMERIRQ_FD), TIMERIRQ_STOP, 0);
                 clearIrqData(irq_set);
             }
-            ALOGV_IF(EXTRA_VERBOSE, "Not allowing TimerIRQ");
+            LOGV_IF(EXTRA_VERBOSE, "Not allowing TimerIRQ");
             mUseTimerirq = false;
         }
 
         if (!mDmpStarted) {
-            if (mHaveGoodMpuCal || mHaveGoodCompassCal) {
+            if (mHaveGoodMpuCal) {
                 rv = inv_store_calibration();
-                ALOGE_IF(rv != INV_SUCCESS,
-                        "error: unable to store MPL calibration file");
+                if (!rv)
+                    LOGV("Calibration file successfully stored");
+                else
+                    LOGE("Error : unable to store MPL calibration file");
                 mHaveGoodMpuCal = false;
-                mHaveGoodCompassCal = false;
             }
-            //ALOGV("Starting DMP");
+            LOGV("Starting DMP");
+            nineAxisSF.enable();
             rv = inv_dmp_start();
-            ALOGE_IF(rv != INV_SUCCESS, "unable to start dmp");
+            LOGE_IF(rv != INV_SUCCESS, "unable to start dmp");
             mDmpStarted = true;
         }
     }
 
     //check if we should stop the DMP
     if (mDmpStarted && (sen_mask == 0)) {
-        //ALOGV("Stopping DMP");
+        LOGV("Stopping DMP");
+        nineAxisSF.disable();
         rv = inv_dmp_stop();
-        ALOGE_IF(rv != INV_SUCCESS, "error: unable to stop DMP (retcode = %d)",
-                rv);
+        LOGE_IF(rv != INV_SUCCESS, "error: unable to stop DMP (retcode = %d)", rv);
         if (mUseTimerirq) {
             ioctl(mIrqFds.valueFor(TIMERIRQ_FD), TIMERIRQ_STOP, 0);
         }
         clearIrqData(irq_set);
 
+        shutdownFeatures();
+
         mDmpStarted = false;
         mPollTime = -1;
         mCurFifoRate = -1;
     }
+}
 
+void MPLSensor::loadCompassCalibrationEnabler(void* h_dmp_lib, const char* suffix)
+{
+    const char prefix[] = "inv_";
+    char symname[35];
+    const char* error;
+    inv_error_t (*enable_disable)(void);
+
+    /* enabler */    
+    strcpy(symname, prefix);
+    strcat(symname, "enable_");
+    strcat(symname, suffix);
+
+    error = dlerror();
+    
+    enable_disable = (inv_error_t(*)()) dlsym(h_dmp_lib, symname);
+    error = dlerror();
+    if(error != NULL) {
+        LOGE("%s : could not load compass calibration enable function '%s'", 
+             error, symname);
+    } else {
+        LOGI("Loaded symbol '%s'\n", symname);
+    }
+    nineAxisSF.registerEnabler(enable_disable);
+    
+    /* disabler */
+    strcpy(symname, prefix);
+    strcat(symname, "disable_");
+    strcat(symname, suffix);
+
+    error = dlerror();
+
+    enable_disable = (inv_error_t(*)()) dlsym(h_dmp_lib, symname);
+    error = dlerror();
+    if(error != NULL) {
+        LOGE("%s : could not load compass calibration disable function '%s'", 
+             error, symname);
+    } else {
+        LOGI("Loaded symbol '%s'\n", symname);
+    }
+    nineAxisSF.registerDisabler(enable_disable);
 }
 
 /**
@@ -450,107 +590,150 @@ void MPLSensor::setPowerStates(int enabled_sensors)
  */
 void MPLSensor::initMPL()
 {
-    FUNC_LOG;
+    VFUNC_LOG;
     inv_error_t result;
-    unsigned short bias_update_mask = 0xFFFF;
+    unsigned short bias_update_mask = INV_ALL;
     struct mldl_cfg *mldl_cfg;
 
     if (inv_dmp_open() != INV_SUCCESS) {
-        ALOGE("Fatal Error : could not open DMP correctly.\n");
+        LOGE("Fatal Error : could not open DMP correctly.\n");
     }
 
-    result = inv_set_mpu_sensors(ALL_MPL_SENSORS_NP); //default to all sensors, also makes 9axis enable work
-    ALOGE_IF(result != INV_SUCCESS,
+    result = inv_set_mpu_sensors(ALL_MPL_SENSORS_NP); /* default to all sensors, also makes 9axis enable work */
+    LOGE_IF(result != INV_SUCCESS,
             "Fatal Error : could not set enabled sensors.");
 
-    if (inv_load_calibration() != INV_SUCCESS) {
-        ALOGE("could not open MPL calibration file");
-    }
+    result = inv_load_calibration();
+    if (result)
+        LOGV("Calibration file successfully loaded");
+    else
+        LOGE("Could not open or load MPL calibration file (%d)", result);
 
-    //check for the 9axis fusion library: if available load it and start 9x
-    void* h_dmp_lib=dlopen("libinvensense_mpl.so", RTLD_NOW);
-    if(h_dmp_lib) {
-        const char* error;
-        error = dlerror();
-        inv_error_t (*fp_inv_enable_9x_fusion)() =
-              (inv_error_t(*)()) dlsym(h_dmp_lib, "inv_enable_9x_fusion");
-        if((error = dlerror()) != NULL) {
-            ALOGE("%s %s", error, "inv_enable_9x_fusion");
-        } else if ((*fp_inv_enable_9x_fusion)() != INV_SUCCESS) {
-            ALOGE( "Warning : 9 axis sensor fusion not available "
-                  "- No compass detected.\n");
-        } else {
-            /*  9axis is loaded and enabled                            */
-            /*  this variable is used for coming up with sensor list   */
-            mNineAxisEnabled = true;
-        }
+    /* check for the 9axis fusion library */
+    void *h_dmp_lib = dlopen(MPL_LIB_NAME, RTLD_NOW);
+    if(!h_dmp_lib) {
+        LOGE("%s not found, 9x sensor fusion disabled (%s)",
+             MPL_LIB_NAME, dlerror());
     } else {
-        const char* error = dlerror();
-        ALOGE("libinvensense_mpl.so not found, 9x sensor fusion disabled (%s)",error);
+        mldl_cfg = inv_get_dl_config();
+        
+        if (!mldl_cfg->slave[EXT_SLAVE_TYPE_COMPASS]) {
+            LOGW("No compass configured on this platform : "
+                 "mldl_cfg->slave[EXT_SLAVE_TYPE_COMPASS] = NULL\n");
+                 
+        } else if (mldl_cfg->slave[EXT_SLAVE_TYPE_COMPASS]->id == COMPASS_ID_AK8975) {
+            void *h_akm_lib = dlopen(AKM_LIB_NAME, RTLD_NOW);
+            if (h_akm_lib) {
+                const char* error;
+                error = dlerror();
+                inv_error_t (*fp_inv_external_slave_akm8975_open)() =
+                    (inv_error_t(*)()) dlsym(
+                        h_akm_lib, "inv_external_slave_akm8975_open");
+                if (fp_inv_external_slave_akm8975_open) 
+				{
+                    result = (*fp_inv_external_slave_akm8975_open)();
+                    LOGE_IF(result != INV_SUCCESS, 
+                            "inv_external_slave_akm8975_open failed.");
+                    loadCompassCalibrationEnabler(h_dmp_lib, 
+                                                  "9x_fusion_external");
+                } else {
+                    LOGE("Unable to find symbol 'inv_external_slave_akm8975_open'");
+                }
+            } else {
+                LOGE("could not find AKM partner library %s => "
+                     "using InvenSense internals.", AKM_LIB_NAME);
+                loadCompassCalibrationEnabler(h_dmp_lib, "9x_fusion");
+            }
+            
+        } else if (mldl_cfg->slave[EXT_SLAVE_TYPE_COMPASS]->id == COMPASS_ID_AMI306) {
+            void *h_ami_lib = dlopen(AICHI_LIB_NAME, RTLD_NOW);
+            if (h_ami_lib) {
+                const char* error;
+                error = dlerror();
+                inv_error_t (*fp_inv_external_slave_ami306_open)() =
+                        (inv_error_t(*)()) dlsym(
+                            h_ami_lib, "inv_external_slave_ami306_open");
+                if (fp_inv_external_slave_ami306_open) {
+                    result = (*fp_inv_external_slave_ami306_open)();
+                    LOGE_IF(result != INV_SUCCESS, 
+                            "inv_external_slave_ami306_open failed.");
+                    loadCompassCalibrationEnabler(h_dmp_lib, 
+                                                  "9x_fusion_external");
+                } else {
+                    LOGE("Unable to find symbol 'inv_external_slave_ami306_open'");
+                }
+            } else {
+                LOGE("could not find Aichi partner library %s => "
+                     "using InvenSense internals.", AICHI_LIB_NAME);
+                loadCompassCalibrationEnabler(h_dmp_lib, "9x_fusion");
+            }
+            
+        } else {
+            loadCompassCalibrationEnabler(h_dmp_lib, "9x_fusion");
+        }
+        nineAxisSF.enable();
     }
 
-    mldl_cfg = inv_get_dl_config();
+    /* enable basic bias trackers for gyros */
+    result = inv_enable_bias_no_motion();
+    LOGE_IF(result, "enable_bias_no_motion returned %d\n", result);
+    result = inv_enable_bias_from_gravity(true);
+    LOGE_IF(result, "enable_bias_from_gravity returned %d\n", result);
+    result = inv_enable_bias_from_LPF(true);
+    LOGE_IF(result, "enable_bias_from_LPF returned %d\n", result);
+    result = inv_set_dead_zone_normal(true);
+    LOGE_IF(result, "set_dead_zone_normal returned %d\n", result);
+    result = inv_enable_temp_comp();
+    LOGE_IF(result, "enable_temp_comp returned %d\n", result);
 
-    if (inv_set_bias_update(bias_update_mask) != INV_SUCCESS) {
-        ALOGE("Error : Bias update function could not be set.\n");
-    }
+    /* enable MPU interrupts */
+    result = inv_set_motion_interrupt(true);
+    LOGE_IF(result, "set_motion_interrupt returned %d\n", result);
+    result = inv_set_fifo_interrupt(true);
+    LOGE_IF(result, "set_fifo_interrupt returned %d\n", result);
 
-    if (inv_set_motion_interrupt(1) != INV_SUCCESS) {
-        ALOGE("Error : could not set motion interrupt");
-    }
-
-    if (inv_set_fifo_interrupt(1) != INV_SUCCESS) {
-        ALOGE("Error : could not set fifo interrupt");
-    }
-
-    result = inv_set_fifo_rate(6);
-    if (result != INV_SUCCESS) {
-        ALOGE("Fatal error: inv_set_fifo_rate returned %d\n", result);
-    }
+    mCurFifoRate = 6;
+    result = inv_set_fifo_rate(mCurFifoRate);
+    LOGE_IF(result, "set_fifo_rate returned %d\n", result);
 
     mMpuAccuracy = SENSOR_STATUS_ACCURACY_MEDIUM;
+    
     setupCallbacks();
-
 }
 
 /** setup the fifo contents.
  */
-void MPLSensor::setupFIFO()
+void MPLSensor::enableFIFO()
 {
-    FUNC_LOG;
+    VFUNC_LOG;
     inv_error_t result;
 
     result = inv_send_accel(INV_ALL, INV_32_BIT);
-    if (result != INV_SUCCESS) {
-        ALOGE("Fatal error: inv_send_accel returned %d\n", result);
-    }
-
+    LOGE_IF(result, "Fatal error: inv_send_accel returned %d\n", result);
+    
     result = inv_send_quaternion(INV_32_BIT);
-    if (result != INV_SUCCESS) {
-        ALOGE("Fatal error: inv_send_quaternion returned %d\n", result);
-    }
-
+    LOGE_IF(result, "Fatal error: inv_send_quaternion returned %d\n", result);
+    
     result = inv_send_linear_accel(INV_ALL, INV_32_BIT);
-    if (result != INV_SUCCESS) {
-        ALOGE("Fatal error: inv_send_linear_accel returned %d\n", result);
-    }
-
+    LOGE_IF(result, "Fatal error: inv_send_linear_accel returned %d\n", result);
+    
     result = inv_send_linear_accel_in_world(INV_ALL, INV_32_BIT);
-    if (result != INV_SUCCESS) {
-        ALOGE("Fatal error: inv_send_linear_accel_in_world returned %d\n",
-             result);
-    }
-
+    LOGE_IF(result, "Fatal error: inv_send_linear_accel_in_world returned %d\n",
+            result);
+            
     result = inv_send_gravity(INV_ALL, INV_32_BIT);
-    if (result != INV_SUCCESS) {
-        ALOGE("Fatal error: inv_send_gravity returned %d\n", result);
-    }
-
+    LOGE_IF(result, "Fatal error: inv_send_gravity returned %d\n", result);
+    
+#if defined USE_TYPE_GYROSCOPE_COMPENSATED
     result = inv_send_gyro(INV_ALL, INV_32_BIT);
-    if (result != INV_SUCCESS) {
-        ALOGE("Fatal error: inv_send_gyro returned %d\n", result);
-    }
-
+    LOGE_IF(result, "Fatal error: inv_send_gyro returned %d\n", result);
+#else
+    result = inv_send_sensor_data(INV_ELEMENT_2 | INV_ELEMENT_3 | INV_ELEMENT_4,
+                                  INV_16_BIT);
+    LOGE_IF(result, 
+            "Fatal error: inv_send_sensor_data('raw gyro') returned %d\n",
+            result);
+#endif
 }
 
 /**
@@ -558,32 +741,40 @@ void MPLSensor::setupFIFO()
  */
 void MPLSensor::setupCallbacks()
 {
-    FUNC_LOG;
-    if (inv_set_motion_callback(mot_cb_wrapper) != INV_SUCCESS) {
-        ALOGE("Error : Motion callback could not be set.\n");
-
-    }
-
-    if (inv_set_fifo_processed_callback(procData_cb_wrapper) != INV_SUCCESS) {
-        ALOGE("Error : Processed data callback could not be set.");
-
-    }
+    VFUNC_LOG;
+    int result;
+    
+    result = inv_set_fifo_processed_callback(procData_cb_wrapper);
+    LOGE_IF(result, "set_fifo_processed_callback returned %d", result);
+    result = inv_set_motion_callback(mot_cb_wrapper);
+    LOGE_IF(result, "set_motion_callback returned %d", result);
 }
 
 /**
  * handle the motion/no motion output from the MPL.
  */
-void MPLSensor::cbOnMotion(uint16_t val)
+void MPLSensor::cbOnMotion(uint16_t motionType)
 {
-    FUNC_LOG;
-    //after the first no motion, the gyro should be calibrated well
-    if (val == 2) {
-        mMpuAccuracy = SENSOR_STATUS_ACCURACY_HIGH;
-        if ((inv_get_dl_config()->requested_sensors) & INV_THREE_AXIS_GYRO) {
-            //if gyros are on and we got a no motion, set a flag
-            // indicating that the cal file can be written.
-            mHaveGoodMpuCal = true;
-        }
+    VFUNC_LOG;
+
+    switch(motionType) {
+        case INV_MOTION:
+            LOGI("**** Motion ****\n");
+            break;
+
+        case INV_NO_MOTION:
+            /* after the first no motion, the gyro should be calibrated well */
+            mMpuAccuracy = SENSOR_STATUS_ACCURACY_HIGH;
+            if ((inv_get_dl_config()->inv_mpu_cfg->requested_sensors) & INV_THREE_AXIS_GYRO) {
+                //if gyros are on and we got a no motion, set a flag
+                // indicating that the cal file can be written.
+                mHaveGoodMpuCal = true;
+            }
+            LOGI("**** No Motion ****\n");
+            break;
+
+        default:
+            break;
     }
 
     return;
@@ -594,7 +785,7 @@ void MPLSensor::cbProcData()
 {
     mNewData = 1;
     mSampleCount++;
-    //ALOGV_IF(EXTRA_VERBOSE, "new data (%d)", sampleCount);
+    //LOGV_IF(EXTRA_VERBOSE, "new data (%d)", sampleCount);
 }
 
 //these handlers transform mpl data into one of the Android sensor types
@@ -605,7 +796,11 @@ void MPLSensor::gyroHandler(sensors_event_t* s, uint32_t* pending_mask,
 {
     VFUNC_LOG;
     inv_error_t res;
-    res = inv_get_float_array(INV_GYROS, s->gyro.v);
+#if defined USE_TYPE_GYROSCOPE_COMPENSATED
+    res = inv_get_gyro_float(s->gyro.v);
+#else
+    res = inv_get_gyro_raw_float(s->gyro.v);
+#endif
     s->gyro.v[0] = s->gyro.v[0] * M_PI / 180.0;
     s->gyro.v[1] = s->gyro.v[1] * M_PI / 180.0;
     s->gyro.v[2] = s->gyro.v[2] * M_PI / 180.0;
@@ -615,16 +810,16 @@ void MPLSensor::gyroHandler(sensors_event_t* s, uint32_t* pending_mask,
 }
 
 void MPLSensor::accelHandler(sensors_event_t* s, uint32_t* pending_mask,
-                              int index)
+                             int index)
 {
-    //VFUNC_LOG;
+    VFUNC_LOG;
     inv_error_t res;
-    res = inv_get_float_array(INV_ACCELS, s->acceleration.v);
+    res = inv_get_accel_float(s->acceleration.v);
     //res = inv_get_accel_float(s->acceleration.v);
     s->acceleration.v[0] = s->acceleration.v[0] * 9.81;
     s->acceleration.v[1] = s->acceleration.v[1] * 9.81;
     s->acceleration.v[2] = s->acceleration.v[2] * 9.81;
-    //ALOGV_IF(EXTRA_VERBOSE, "accel data: %f %f %f", s->acceleration.v[0], s->acceleration.v[1], s->acceleration.v[2]);
+    //LOGV_IF(EXTRA_VERBOSE, "accel data: %f %f %f", s->acceleration.v[0], s->acceleration.v[1], s->acceleration.v[2]);
     s->acceleration.status = SENSOR_STATUS_ACCURACY_HIGH;
     if (res == INV_SUCCESS)
         *pending_mask |= (1 << index);
@@ -632,20 +827,14 @@ void MPLSensor::accelHandler(sensors_event_t* s, uint32_t* pending_mask,
 
 int MPLSensor::estimateCompassAccuracy()
 {
-    inv_error_t res;
     int rv;
-
-    res = inv_get_compass_accuracy(&rv);
-    if(rv >= SENSOR_STATUS_ACCURACY_MEDIUM) {
-         mHaveGoodCompassCal = true;	 
-    }
-    ALOGE_IF(res != INV_SUCCESS, "error returned from inv_get_compass_accuracy");
-
+    inv_error_t res = inv_get_compass_accuracy(&rv);
+    LOGE_IF(res, "error returned from inv_get_compass_accuracy");
     return rv;
 }
 
 void MPLSensor::compassHandler(sensors_event_t* s, uint32_t* pending_mask,
-                                int index)
+                               int index)
 {
     VFUNC_LOG;
     inv_error_t res, res2;
@@ -653,13 +842,8 @@ void MPLSensor::compassHandler(sensors_event_t* s, uint32_t* pending_mask,
     float total_be;
     static int bias_error_settled = 0;
 
-    res = inv_get_float_array(INV_MAGNETOMETER, s->magnetic.v);
-
-    if (res != INV_SUCCESS) {
-        ALOGW(
-             "compass_handler inv_get_float_array(INV_MAGNETOMETER) returned %d",
-             res);
-    }
+    res = inv_get_magnetometer_float(s->magnetic.v);
+    LOGE_IF(res, "compass_handler inv_get_magnetometer_float returned %d", res);
 
     s->magnetic.status = estimateCompassAccuracy();
 
@@ -668,7 +852,7 @@ void MPLSensor::compassHandler(sensors_event_t* s, uint32_t* pending_mask,
 }
 
 void MPLSensor::rvHandler(sensors_event_t* s, uint32_t* pending_mask,
-                           int index)
+                          int index)
 {
     VFUNC_LOG;
     float quat[4];
@@ -676,9 +860,8 @@ void MPLSensor::rvHandler(sensors_event_t* s, uint32_t* pending_mask,
     float ang = 0;
     inv_error_t r;
 
-    r = inv_get_float_array(INV_QUATERNION, quat);
-
-    if (r != INV_SUCCESS) {
+    r = inv_get_quaternion_float(quat);
+    if (r) {
         *pending_mask &= ~(1 << index);
         return;
     } else {
@@ -707,13 +890,12 @@ void MPLSensor::rvHandler(sensors_event_t* s, uint32_t* pending_mask,
     s->gyro.v[1] = quat[2];
     s->gyro.v[2] = quat[3];
 
-    s->gyro.status
-            = ((mMpuAccuracy < estimateCompassAccuracy()) ? mMpuAccuracy
-                                                            : estimateCompassAccuracy());
+    s->gyro.status = ((mMpuAccuracy < estimateCompassAccuracy()) ? mMpuAccuracy
+                     : estimateCompassAccuracy());
 }
 
 void MPLSensor::laHandler(sensors_event_t* s, uint32_t* pending_mask,
-                           int index)
+                          int index)
 {
     VFUNC_LOG;
     inv_error_t res;
@@ -727,7 +909,7 @@ void MPLSensor::laHandler(sensors_event_t* s, uint32_t* pending_mask,
 }
 
 void MPLSensor::gravHandler(sensors_event_t* s, uint32_t* pending_mask,
-                             int index)
+                            int index)
 {
     VFUNC_LOG;
     inv_error_t res;
@@ -754,6 +936,7 @@ void MPLSensor::calcOrientationSensor(float *R, float *values)
     if (values[0] < 0) {
         values[0] += 360.0f;
     }
+    
     //Pitch
     tmp = R[7];
     if (tmp > 1.0f)
@@ -767,13 +950,13 @@ void MPLSensor::calcOrientationSensor(float *R, float *values)
     if (values[1] > 180.0f) {
         values[1] -= 360.0f;
     }
+    
     //Roll
     if ((R[7] > 0.7071067f)) {
         values[2] = (float) atan2f(R[6], R[7]);
     } else {
         values[2] = (float) atan2f(R[6], R[8]);
     }
-
     values[2] *= 57.295779513082320876798154814105f;
     if (values[2] > 90.0f) {
         values[2] = 180.0f - values[2];
@@ -784,7 +967,7 @@ void MPLSensor::calcOrientationSensor(float *R, float *values)
 }
 
 void MPLSensor::orienHandler(sensors_event_t* s, uint32_t* pending_mask,
-                              int index) //note that this is the handler for the android 'orientation' sensor, not the mpl orientation output
+                             int index) // note that this is the handler for the android 'orientation' sensor, not the mpl orientation output
 {
     VFUNC_LOG;
     inv_error_t res;
@@ -797,46 +980,55 @@ void MPLSensor::orienHandler(sensors_event_t* s, uint32_t* pending_mask,
     //ComputeAndOrientation(heading[0], euler, s->orientation.v);
     calcOrientationSensor(rot_mat, s->orientation.v);
 
-    s->orientation.status = estimateCompassAccuracy();
+    s->orientation.status
+            = ((mMpuAccuracy < estimateCompassAccuracy()) ? mMpuAccuracy
+                                                            : estimateCompassAccuracy());
 
     if (res == INV_SUCCESS)
         *pending_mask |= (1 << index);
     else
-        ALOGW("orienHandler: data not valid (%d)", (int) res);
+        LOGD("orien_handler: data not valid (%d)", (int) res);
 
 }
 
 int MPLSensor::enable(int32_t handle, int en)
 {
-    FUNC_LOG;
-    //ALOGV("handle : %d en: %d", handle, en);
-
+    VFUNC_LOG;
+    android::String8 sname;
     int what = -1;
 
     switch (handle) {
     case ID_A:
         what = Accelerometer;
+        sname = "Accelerometer";
         break;
     case ID_M:
         what = MagneticField;
+        sname = "MagneticField";
         break;
     case ID_O:
         what = Orientation;
+        sname = "Orientation";
         break;
     case ID_GY:
         what = Gyro;
+        sname = "Gyro";
         break;
     case ID_GR:
         what = Gravity;
+        sname = "Gravity";
         break;
     case ID_RV:
         what = RotationVector;
+        sname = "RotationVector";
         break;
     case ID_LA:
         what = LinearAccel;
+        sname = "LinearAccel";
         break;
     default: //this takes care of all the gestures
         what = handle;
+        sname = "Others";
         break;
     }
 
@@ -845,8 +1037,12 @@ int MPLSensor::enable(int32_t handle, int en)
 
     int newState = en ? 1 : 0;
     int err = 0;
-    //ALOGV_IF((uint32_t(newState) << what) != (mEnabled & (1 << what)),
-    //        "sensor state change what=%d", what);
+    
+    LOGV("enable - sensor %s (handle %d) %s -> %s", sname.string(), handle, 
+            ((mEnabled & (1 << what)) ? "en" : "dis"),
+            ((uint32_t(newState) << what) ? "en" : "dis"));
+//    LOGV_IF((uint32_t(newState) << what) != (mEnabled & (1 << what)),
+//            "%s sensor state change what=%d", sname.string(), what);
 
     pthread_mutex_lock(&mMplMutex);
     if ((uint32_t(newState) << what) != (mEnabled & (1 << what))) {
@@ -854,7 +1050,7 @@ int MPLSensor::enable(int32_t handle, int en)
         short flags = newState;
         mEnabled &= ~(1 << what);
         mEnabled |= (uint32_t(flags) << what);
-        ALOGV_IF(EXTRA_VERBOSE, "mEnabled = %x", mEnabled);
+        LOGV_IF(EXTRA_VERBOSE, "mEnabled = %x", mEnabled);
         setPowerStates(mEnabled);
         pthread_mutex_unlock(&mMplMutex);
         if (!newState)
@@ -862,39 +1058,48 @@ int MPLSensor::enable(int32_t handle, int en)
         return err;
     }
     pthread_mutex_unlock(&mMplMutex);
+    
     return err;
 }
 
 int MPLSensor::setDelay(int32_t handle, int64_t ns)
 {
-    FUNC_LOG;
-    ALOGV_IF(EXTRA_VERBOSE,
-            " setDelay handle: %d rate %d", handle, (int) (ns / 1000000LL));
+    VFUNC_LOG;
+    android::String8 sname;
     int what = -1;
+
     switch (handle) {
     case ID_A:
         what = Accelerometer;
+        sname = "Accelerometer";
         break;
     case ID_M:
         what = MagneticField;
+        sname = "MagneticField";
         break;
     case ID_O:
         what = Orientation;
+        sname = "Orientation";
         break;
     case ID_GY:
         what = Gyro;
+        sname = "Gyro";
         break;
     case ID_GR:
         what = Gravity;
+        sname = "Gravity";
         break;
     case ID_RV:
         what = RotationVector;
+        sname = "RotationVector";
         break;
     case ID_LA:
         what = LinearAccel;
+        sname = "LinearAccel";
         break;
-    default:
+    default: //this takes care of all the gestures
         what = handle;
+        sname = "Others";
         break;
     }
 
@@ -903,16 +1108,20 @@ int MPLSensor::setDelay(int32_t handle, int64_t ns)
 
     if (ns < 0)
         return -EINVAL;
+        
+    LOGV("setDelay - sensor %s (handle %d), rate %d ms (%.2f Hz)", 
+         sname.string(), handle, (int)(ns / 1000000LL), 1000000000.f / ns);
 
     pthread_mutex_lock(&mMplMutex);
     mDelays[what] = ns;
     pthread_mutex_unlock(&mMplMutex);
+    
     return update_delay();
 }
 
 int MPLSensor::update_delay()
 {
-    FUNC_LOG;
+    VFUNC_LOG;
     int rv = 0;
     bool irq_set[5];
 
@@ -920,50 +1129,55 @@ int MPLSensor::update_delay()
 
     if (mEnabled) {
         uint64_t wanted = -1LLU;
+        
+        // search the minimum delay requested across all enabled sensors
         for (int i = 0; i < numSensors; i++) {
             if (mEnabled & (1 << i)) {
                 uint64_t ns = mDelays[i];
                 wanted = wanted < ns ? wanted : ns;
             }
         }
-
-        //Limit all rates to 100Hz max. 100Hz = 10ms = 10000000ns
+        // Limit all rates to 100Hz max. => 10ms or 10000000ns
         if (wanted < 10000000LLU) {
             wanted = 10000000LLU;
         }
 
-        int rate = ((wanted) / 5000000LLU) - ((wanted % 5000000LLU == 0) ? 1
-                                                                         : 0); //mpu fifo rate is in increments of 5ms
-        if (rate == 0) //KLP disallow fifo rate 0
+        // mpu fifo rate is in increments of 5ms
+        int rate = (wanted / 5000000LLU) - ((wanted % 5000000LLU == 0) ? 1 : 0);
+        if (rate == 0) // disallow fifo rate 0
             rate = 1;
 
-        if (rate != mCurFifoRate) {
-            //ALOGD("set fifo rate: %d %llu", rate, wanted);
-            inv_error_t res; // = inv_dmp_stop();
-            res = inv_set_fifo_rate(rate);
-            ALOGE_IF(res != INV_SUCCESS, "error setting FIFO rate");
+        adjustFifoRate(rate);
 
-            //res = inv_dmp_start();
-            //ALOGE_IF(res != INV_SUCCESS, "error re-starting DMP");
+        if (rate != mCurFifoRate) {
+            LOGV("set fifo rate - divider : %d, delay : %llu ms (%.2f Hz)", 
+                 rate, wanted / 1000000LL, 1000000000.f / wanted);
+            inv_error_t res = inv_dmp_stop();
+            LOGE_IF(res != INV_SUCCESS, "error stopping the DMP");
+            res = inv_set_fifo_rate(rate);
+            LOGE_IF(res != INV_SUCCESS, "error setting FIFO rate");
+            res = inv_dmp_start();
+            LOGE_IF(res != INV_SUCCESS, "error re-starting the DMP");
 
             mCurFifoRate = rate;
             rv = (res == INV_SUCCESS);
         }
 
-        if (((inv_get_dl_config()->requested_sensors & INV_DMP_PROCESSOR) == 0)) {
+        if (((inv_get_dl_config()->inv_mpu_cfg->requested_sensors & 
+                INV_DMP_PROCESSOR) == 0)) {
             if (mUseTimerirq) {
                 ioctl(mIrqFds.valueFor(TIMERIRQ_FD), TIMERIRQ_STOP, 0);
                 clearIrqData(irq_set);
-                if (inv_get_dl_config()->requested_sensors
+                if (inv_get_dl_config()->inv_mpu_cfg->requested_sensors
                         == INV_THREE_AXIS_COMPASS) {
                     ioctl(mIrqFds.valueFor(TIMERIRQ_FD), TIMERIRQ_START,
                           (unsigned long) (wanted / 1000000LLU));
-                    ALOGV_IF(EXTRA_VERBOSE, "updated timerirq period to %d",
+                    LOGV_IF(EXTRA_VERBOSE, "updated timerirq period to %d",
                             (int) (wanted / 1000000LLU));
                 } else {
                     ioctl(mIrqFds.valueFor(TIMERIRQ_FD), TIMERIRQ_START,
                           (unsigned long) inv_get_sample_step_size_ms());
-                    ALOGV_IF(EXTRA_VERBOSE, "updated timerirq period to %d",
+                    LOGV_IF(EXTRA_VERBOSE, "updated timerirq period to %d",
                             (int) inv_get_sample_step_size_ms());
                 }
             }
@@ -977,19 +1191,18 @@ int MPLSensor::update_delay()
 /* return the current time in nanoseconds */
 int64_t MPLSensor::now_ns(void)
 {
-    //FUNC_LOG;
     struct timespec ts;
 
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    //ALOGV("Time %lld", (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec);
+    //LOGV("Time %lld", (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec);
     return (int64_t) ts.tv_sec * 1000000000 + ts.tv_nsec;
 }
 
 int MPLSensor::readEvents(sensors_event_t* data, int count)
 {
-    //VFUNC_LOG;
+    VFUNC_LOG;
     int i;
-    bool irq_set[5] = { false, false, false, false, false };
+    bool irq_set[5] = {false, false, false, false, false};
     inv_error_t rv;
     if (count < 1)
         return -EINVAL;
@@ -999,32 +1212,31 @@ int MPLSensor::readEvents(sensors_event_t* data, int count)
 
     pthread_mutex_lock(&mMplMutex);
     if (mDmpStarted) {
-        //ALOGV_IF(EXTRA_VERBOSE, "Update Data");
+        //LOGV_IF(EXTRA_VERBOSE, "Update Data");
         rv = inv_update_data();
-        ALOGE_IF(rv != INV_SUCCESS, "inv_update_data error (code %d)", (int) rv);
+        LOGE_IF(rv != INV_SUCCESS, "inv_update_data error (code %d)", (int) rv);
     }
 
     else {
         //probably just one extra read after shutting down
-        ALOGV_IF(EXTRA_VERBOSE,
+        LOGV_IF(EXTRA_VERBOSE,
                 "MPLSensor::readEvents called, but there's nothing to do.");
     }
 
     pthread_mutex_unlock(&mMplMutex);
 
     if (!mNewData) {
-        ALOGV_IF(EXTRA_VERBOSE, "no new data");
+        LOGV_IF(EXTRA_VERBOSE, "no new data");
         return 0;
     }
     mNewData = 0;
-    
-    /* google timestamp */
+    int64_t tt = now_ns();
     pthread_mutex_lock(&mMplMutex);
     for (int i = 0; i < numSensors; i++) {
         if (mEnabled & (1 << i)) {
             CALL_MEMBER_FN(this,mHandlers[i])(mPendingEvents + i,
                                               &mPendingMask, i);
-	    mPendingEvents[i].timestamp = irq_timestamp;
+            mPendingEvents[i].timestamp = tt;
         }
     }
 
@@ -1046,26 +1258,26 @@ int MPLSensor::readEvents(sensors_event_t* data, int count)
 
 int MPLSensor::getFd() const
 {
-    //ALOGV("MPLSensor::getFd returning %d", data_fd);
+    LOGV("MPLSensor::getFd returning %d", data_fd);
     return data_fd;
 }
 
 int MPLSensor::getAccelFd() const
 {
-    //ALOGV("MPLSensor::getAccelFd returning %d", accel_fd);
+    LOGV("MPLSensor::getAccelFd returning %d", accel_fd);
     return accel_fd;
 }
 
 int MPLSensor::getTimerFd() const
 {
-    //ALOGV("MPLSensor::getTimerFd returning %d", timer_fd);
+    LOGV("MPLSensor::getTimerFd returning %d", timer_fd);
     return timer_fd;
 }
 
 int MPLSensor::getPowerFd() const
 {
     int hdl = (int) inv_get_serial_handle();
-    //ALOGV("MPLSensor::getPowerFd returning %d", hdl);
+    LOGV("MPLSensor::getPowerFd returning %d", hdl);
     return hdl;
 }
 
@@ -1121,247 +1333,3 @@ void MPLSensor::wakeEvent()
     mForceSleep = false;
     pthread_mutex_unlock(&mMplMutex);
 }
-
-/** fill in the sensor list based on which sensors are configured.
- *  return the number of configured sensors.
- *  parameter list must point to a memory region of at least 7*sizeof(sensor_t)
- *  parameter len gives the length of the buffer pointed to by list
- */
-
-int MPLSensor::populateSensorList(struct sensor_t *list, int len)
-{
-    int numsensors;
-
-    if(len < 7*sizeof(sensor_t)) {
-        ALOGE("sensor list too small, not populating.");
-        return 0;
-    }
-
-    /* fill in the base values */
-    memcpy(list, sSensorList, sizeof (struct sensor_t) * 7);
-
-    /* first add gyro, accel and compass to the list */
-
-    /* fill in accel values                          */
-    unsigned short accelId = inv_get_accel_id();
-    if(accelId == 0)
-    {
-	ALOGE("Can not get accel id");
-    }   
-    fillAccel(accelId, list);
-
-    /* fill in compass values                        */
-    unsigned short compassId = inv_get_compass_id();
-    if(compassId == 0)
-    {
-	ALOGE("Can not get compass id");
-    }  
-    fillCompass(compassId, list);
-
-    /* fill in gyro values                           */
-    fillGyro(MPU_NAME, list);
-
-    if(mNineAxisEnabled)
-    {
-        numsensors = 7;
-        /* all sensors will be added to the list     */
-        /* fill in orientation values	             */
-        fillOrientation(list);
-
-        /* fill in rotation vector values	     */
-        fillRV(list);
-
-        /* fill in gravity values			     */
-        fillGravity(list);
-
-        /* fill in Linear accel values            */
-        fillLinearAccel(list);
-    } else {
-        /* no 9-axis sensors, zero fill that part of the list */
-        numsensors = 3;
-        memset(list+3, 0, 4*sizeof(struct sensor_t));
-    }
-
-    return numsensors;
-}
-
-void MPLSensor::fillAccel(unsigned char accel, struct sensor_t *list)
-{
-    switch (accel) {
-    case ACCEL_ID_LIS331:
-        list[Accelerometer].maxRange = ACCEL_LIS331_RANGE;
-        list[Accelerometer].resolution = ACCEL_LIS331_RESOLUTION;
-        list[Accelerometer].power = ACCEL_LIS331_POWER;
-        break;
-
-    case ACCEL_ID_LIS3DH:
-        list[Accelerometer].maxRange = ACCEL_LIS3DH_RANGE;
-        list[Accelerometer].resolution = ACCEL_LIS3DH_RESOLUTION;
-        list[Accelerometer].power = ACCEL_LIS3DH_POWER;
-        break;
-
-    case ACCEL_ID_KXSD9:
-        list[Accelerometer].maxRange = ACCEL_KXSD9_RANGE;
-        list[Accelerometer].resolution = ACCEL_KXSD9_RESOLUTION;
-        list[Accelerometer].power = ACCEL_KXSD9_POWER;
-        break;
-
-    case ACCEL_ID_KXTF9:
-        list[Accelerometer].maxRange = ACCEL_KXTF9_RANGE;
-        list[Accelerometer].resolution = ACCEL_KXTF9_RESOLUTION;
-        list[Accelerometer].power = ACCEL_KXTF9_POWER;
-        break;
-
-    case ACCEL_ID_BMA150:
-        list[Accelerometer].maxRange = ACCEL_BMA150_RANGE;
-        list[Accelerometer].resolution = ACCEL_BMA150_RESOLUTION;
-        list[Accelerometer].power = ACCEL_BMA150_POWER;
-        break;
-
-    case ACCEL_ID_BMA222:
-        list[Accelerometer].maxRange = ACCEL_BMA222_RANGE;
-        list[Accelerometer].resolution = ACCEL_BMA222_RESOLUTION;
-        list[Accelerometer].power = ACCEL_BMA222_POWER;
-        break;
-
-    case ACCEL_ID_BMA250:
-        list[Accelerometer].maxRange = ACCEL_BMA250_RANGE;
-        list[Accelerometer].resolution = ACCEL_BMA250_RESOLUTION;
-        list[Accelerometer].power = ACCEL_BMA250_POWER;
-        break;
-
-    case ACCEL_ID_ADXL34X:
-        list[Accelerometer].maxRange = ACCEL_ADXL34X_RANGE;
-        list[Accelerometer].resolution = ACCEL_ADXL34X_RESOLUTION;
-        list[Accelerometer].power = ACCEL_ADXL34X_POWER;
-        break;
-
-    case ACCEL_ID_MMA8450:
-        list[Accelerometer].maxRange = ACCEL_MMA8450_RANGE;
-        list[Accelerometer].maxRange = ACCEL_MMA8450_RANGE;
-        list[Accelerometer].maxRange = ACCEL_MMA8450_RANGE;
-        break;
-
-    case ACCEL_ID_MMA845X:
-        list[Accelerometer].maxRange = ACCEL_MMA845X_RANGE;
-        list[Accelerometer].resolution = ACCEL_MMA845X_RESOLUTION;
-        list[Accelerometer].power = ACCEL_MMA845X_POWER;
-        break;
-
-    case ACCEL_ID_MPU6050:
-        list[Accelerometer].maxRange = ACCEL_MPU6050_RANGE;
-        list[Accelerometer].resolution = ACCEL_MPU6050_RESOLUTION;
-        list[Accelerometer].power = ACCEL_MPU6050_POWER;
-        break;
-    default:
-        ALOGE("unknown accel id -- accel params will be wrong.");
-        break;
-    }
-}
-
-void MPLSensor::fillCompass(unsigned char compass, struct sensor_t *list)
-{
-    switch (compass) {
-    case COMPASS_ID_AK8975:
-        list[MagneticField].maxRange = COMPASS_AKM8975_RANGE;
-        list[MagneticField].resolution = COMPASS_AKM8975_RESOLUTION;
-        list[MagneticField].power = COMPASS_AKM8975_POWER;
-        break;
-    case COMPASS_ID_AMI30X:
-        list[MagneticField].maxRange = COMPASS_AMI30X_RANGE;
-        list[MagneticField].resolution = COMPASS_AMI30X_RESOLUTION;
-        list[MagneticField].power = COMPASS_AMI30X_POWER;
-        break;
-    case COMPASS_ID_AMI306:
-        list[MagneticField].maxRange = COMPASS_AMI306_RANGE;
-        list[MagneticField].resolution = COMPASS_AMI306_RESOLUTION;
-        list[MagneticField].power = COMPASS_AMI306_POWER;
-        break;
-    case COMPASS_ID_YAS529:
-        list[MagneticField].maxRange = COMPASS_YAS529_RANGE;
-        list[MagneticField].resolution = COMPASS_AMI306_RESOLUTION;
-        list[MagneticField].power = COMPASS_AMI306_POWER;
-        break;
-    case COMPASS_ID_YAS530:
-        list[MagneticField].maxRange = COMPASS_YAS530_RANGE;
-        list[MagneticField].resolution = COMPASS_YAS530_RESOLUTION;
-        list[MagneticField].power = COMPASS_YAS530_POWER;
-        break;
-    case COMPASS_ID_HMC5883:
-        list[MagneticField].maxRange = COMPASS_HMC5883_RANGE;
-        list[MagneticField].resolution = COMPASS_HMC5883_RESOLUTION;
-        list[MagneticField].power = COMPASS_HMC5883_POWER;
-        break;
-    case COMPASS_ID_MMC314X:
-        list[MagneticField].maxRange = COMPASS_MMC314X_RANGE;
-        list[MagneticField].resolution = COMPASS_MMC314X_RESOLUTION;
-        list[MagneticField].power = COMPASS_MMC314X_POWER;
-        break;
-    case COMPASS_ID_HSCDTD002B:
-        list[MagneticField].maxRange = COMPASS_HSCDTD002B_RANGE;
-        list[MagneticField].resolution = COMPASS_HSCDTD002B_RESOLUTION;
-        list[MagneticField].power = COMPASS_HSCDTD002B_POWER;
-        break;
-    case COMPASS_ID_HSCDTD004A:
-        list[MagneticField].maxRange = COMPASS_HSCDTD004A_RANGE;
-        list[MagneticField].resolution = COMPASS_HSCDTD004A_RESOLUTION;
-        list[MagneticField].power = COMPASS_HSCDTD004A_POWER;
-        break;
-    default:
-        ALOGE("unknown compass id -- compass parameters will be wrong");
-    }
-}
-
-void MPLSensor::fillGyro(const char* gyro, struct sensor_t *list)
-{
-    if ((gyro != NULL) && (strcmp(gyro, "mpu3050") == 0)) {
-        list[Gyro].maxRange = GYRO_MPU3050_RANGE;
-        list[Gyro].resolution = GYRO_MPU3050_RESOLUTION;
-        list[Gyro].power = GYRO_MPU3050_POWER;
-    } else {
-        list[Gyro].maxRange = GYRO_MPU6050_RANGE;
-        list[Gyro].resolution = GYRO_MPU6050_RESOLUTION;
-        list[Gyro].power = GYRO_MPU6050_POWER;
-    }
-    return;
-}
-
-
-/* fillRV depends on values of accel and compass in the list	*/
-void MPLSensor::fillRV(struct sensor_t *list)
-{
-    /* compute power on the fly */
-    list[RotationVector].power = list[Gyro].power + list[Accelerometer].power
-            + list[MagneticField].power;
-    list[RotationVector].resolution = .00001;
-    list[RotationVector].maxRange = 1.0;
-    return;
-}
-
-void MPLSensor::fillOrientation(struct sensor_t *list)
-{
-    list[Orientation].power = list[Gyro].power + list[Accelerometer].power
-            + list[MagneticField].power;
-    list[Orientation].resolution = .00001;
-    list[Orientation].maxRange = 360.0;
-    return;
-}
-
-void MPLSensor::fillGravity( struct sensor_t *list)
-{
-    list[Gravity].power = list[Gyro].power + list[Accelerometer].power
-            + list[MagneticField].power;
-    list[Gravity].resolution = .00001;
-    list[Gravity].maxRange = 9.81;
-    return;
-}
-
-void MPLSensor::fillLinearAccel(struct sensor_t *list)
-{
-    list[Gravity].power = list[Gyro].power + list[Accelerometer].power
-            + list[MagneticField].power;
-    list[Gravity].resolution = list[Accelerometer].resolution;
-    list[Gravity].maxRange = list[Accelerometer].maxRange;
-    return;
-}
-

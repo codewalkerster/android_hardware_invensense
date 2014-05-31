@@ -1,23 +1,11 @@
 /*
  $License:
-   Copyright 2011 InvenSense, Inc.
-
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
-
- http://www.apache.org/licenses/LICENSE-2.0
-
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
-  $
+    Copyright (C) 2011 InvenSense Corporation, All Rights Reserved.
+ $
  */
 /*******************************************************************************
  *
- * $Id: pressure.c 4120 2010-11-21 19:56:16Z mcaramello $
+ * $Id: pressure.c 5873 2011-08-11 03:13:48Z mcaramello $
  *
  *******************************************************************************/
 
@@ -85,12 +73,12 @@ unsigned char inv_pressure_present(void)
 {
     INVENSENSE_FUNC_START;
     struct mldl_cfg *mldl_cfg = inv_get_dl_config();
-    if (NULL != mldl_cfg->pressure &&
-        NULL != mldl_cfg->pressure->resume &&
-        mldl_cfg->requested_sensors & INV_THREE_AXIS_PRESSURE)
-        return TRUE;
+    if (mldl_cfg->slave[EXT_SLAVE_TYPE_PRESSURE] &&
+        mldl_cfg->slave[EXT_SLAVE_TYPE_PRESSURE]->resume &&
+        mldl_cfg->inv_mpu_cfg->requested_sensors & INV_THREE_AXIS_PRESSURE)
+        return true;
     else
-        return FALSE;
+        return false;
 }
 
 /**
@@ -101,8 +89,8 @@ unsigned char inv_get_pressure_slave_addr(void)
 {
     INVENSENSE_FUNC_START;
     struct mldl_cfg *mldl_cfg = inv_get_dl_config();
-    if (NULL != mldl_cfg->pdata)
-        return mldl_cfg->pdata->pressure.address;
+    if (mldl_cfg->pdata_slave[EXT_SLAVE_TYPE_PRESSURE])
+        return mldl_cfg->pdata_slave[EXT_SLAVE_TYPE_PRESSURE]->address;
     else
         return 0;
 }
@@ -115,8 +103,8 @@ unsigned short inv_get_pressure_id(void)
 {
     INVENSENSE_FUNC_START;
     struct mldl_cfg *mldl_cfg = inv_get_dl_config();
-    if (NULL != mldl_cfg->pressure) {
-        return mldl_cfg->pressure->id;
+    if (mldl_cfg->slave[EXT_SLAVE_TYPE_PRESSURE]) {
+        return mldl_cfg->slave[EXT_SLAVE_TYPE_PRESSURE]->id;
     }
     return ID_INVALID;
 }
@@ -149,7 +137,8 @@ inv_error_t inv_get_pressure_data(long *data)
                         MLErrorCode(result)));
         return result;
     }
-    if (EXT_SLAVE_BIG_ENDIAN == mldl_cfg->pressure->endian)
+    if (EXT_SLAVE_BIG_ENDIAN ==
+        mldl_cfg->slave[EXT_SLAVE_TYPE_PRESSURE]->endian)
         data[0] =
             (((long)((signed char)tmp[0])) << 16) + (((long)tmp[1]) << 8) +
             ((long)tmp[2]);

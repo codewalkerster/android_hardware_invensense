@@ -1,23 +1,11 @@
 /*
  $License:
-   Copyright 2011 InvenSense, Inc.
-
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
-
- http://www.apache.org/licenses/LICENSE-2.0
-
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
-  $
+    Copyright (C) 2011 InvenSense Corporation, All Rights Reserved.
+ $
  */
 
 /******************************************************************************
- * $Id: mlsl_linux_mpu.c 5653 2011-06-16 21:06:55Z nroyer $
+ * $Id: mlsl_linux_mpu.c 6107 2011-09-29 17:51:32Z mcaramello $
  *****************************************************************************/
 
 /**
@@ -47,15 +35,7 @@
 #include <time.h>
 
 #include "mpu.h"
-#if defined CONFIG_MPU_SENSORS_MPU6050A2
-#    include "mpu6050a2.h"
-#elif defined CONFIG_MPU_SENSORS_MPU6050B1
-#    include "mpu6050b1.h"
-#elif defined CONFIG_MPU_SENSORS_MPU3050
-#  include "mpu3050.h"
-#else
-#error Invalid or undefined CONFIG_MPU_SENSORS_MPUxxxx
-#endif
+#include "mpu3050.h"
 
 #include "mlsl.h"
 #include "mlos.h"
@@ -236,7 +216,7 @@ inv_error_t inv_serial_open(char const *port, void **sl_handle)
     if (NULL == port) {
         port = I2CDEV;
     }
-    *sl_handle = (void*) open(port, O_RDWR);
+    *sl_handle = (void*) open(port, O_RDWR | O_NONBLOCK);
     if(sl_handle < 0) {
         /* ERROR HANDLING; you can check errno to see what went wrong */
         MPL_LOGE("inv_serial_open\n");
@@ -299,12 +279,12 @@ inv_error_t inv_serial_write(void *sl_handle,
         char data_buff[4096] = "";
         char strchar[3];
         int ii;
-        for (ii = 0; ii < length; ii++) {
-            snprintf(strchar, sizeof(strchar), "%02x", data[0]);
+        for (ii = 1; ii < length; ii++) {
+            snprintf(strchar, sizeof(strchar), "%02x", data[ii]);
             strncat(data_buff, strchar, sizeof(data_buff));
         }
         MPL_LOGI("I2C Write Success %02x %02x: %s \n",
-                 data[0], length, data_buff);
+                 data[0], length - 1, data_buff);
     }
 
     return INV_SUCCESS;
@@ -339,7 +319,7 @@ inv_error_t inv_serial_read(void *sl_handle,
         char strchar[3];
         int ii;
         for (ii = 0; ii < length; ii++) {
-            snprintf(strchar, sizeof(strchar), "%02x", data[0]);
+            snprintf(strchar, sizeof(strchar), "%02x", data[ii]);
             strncat(data_buff, strchar, sizeof(data_buff));
         }
         MPL_LOGI("I2C Read  Success %02x %02x: %s \n",

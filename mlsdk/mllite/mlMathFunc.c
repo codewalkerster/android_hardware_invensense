@@ -1,39 +1,35 @@
 /*
  $License:
-   Copyright 2011 InvenSense, Inc.
-
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
-
- http://www.apache.org/licenses/LICENSE-2.0
-
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
-  $
+    Copyright (C) 2011 InvenSense Corporation, All Rights Reserved.
+ $
  */
 #include "mlmath.h"
 #include "mlMathFunc.h"
 #include "mlinclude.h"
 
-/** 
- * Performs one iteration of the filter, generating a new y(0) 
+/**
+ * Performs one iteration of the filter, generating a new y(0)
  *         1     / N                /  N             \\
  * y(0) = ---- * |SUM b(k) * x(k) - | SUM a(k) * y(k)|| for N = length
  *        a(0)   \k=0               \ k=1            //
- * 
+ *
  * The filters A and B should be (sizeof(long) * state->length).
  * The state variables x and y should be (sizeof(long) * (state->length - 1))
  *
  * The state variables x and y should be initialized prior to the first call
- * 
+ *
  * @param state Contains the length of the filter, filter coefficients and
  *              filter state variables x and y.
  * @param x New input into the filter.
  */
+#ifndef UMPL_ELIMINATE_64BIT
+/* UMPL_ELIMINATE_64BIT Notes:
+ * An alternate implementation using float instead of long long accumulators
+ * is provided for q29_mult and q30_mult.
+ * When long long accumulators are used and an alternate implementation is not
+ * available, we eliminate the entire function and header with a macro.
+ */
+
 void inv_filter_long(struct filter_long *state, long x)
 {
     const long *b = state->b;
@@ -61,54 +57,93 @@ void inv_filter_long(struct filter_long *state, long x)
     state->y[0] = (long)tmp;
     state->x[0] = x;
 }
+#endif // UMPL_ELIMINATE_64BIT
 
 /** Performs a multiply and shift by 29. These are good functions to write in assembly on
  * with devices with small memory where you want to get rid of the long long which some
  * assemblers don't handle well
- * @param[in] a 
+ * @param[in] a
  * @param[in] b
  * @return ((long long)a*b)>>29
 */
 long inv_q29_mult(long a, long b)
 {
+#ifdef UMPL_ELIMINATE_64BIT
+    long result;
+    result = (long)( (float)a * b / (1L<<29) );
+    return result;
+#else
     long long temp;
     long result;
     temp = (long long)a *b;
     result = (long)(temp >> 29);
     return result;
+#endif
 }
 
 /** Performs a multiply and shift by 30. These are good functions to write in assembly on
  * with devices with small memory where you want to get rid of the long long which some
  * assemblers don't handle well
- * @param[in] a 
+ * @param[in] a
  * @param[in] b
  * @return ((long long)a*b)>>30
 */
 long inv_q30_mult(long a, long b)
 {
+#ifdef UMPL_ELIMINATE_64BIT
+    long result;
+    result = (long)((float)a * b / (1L << 30));
+    return result;
+#else
     long long temp;
     long result;
-    temp = (long long)a *b;
+    temp = (long long)a * b;
     result = (long)(temp >> 30);
     return result;
+#endif
 }
+
+#ifndef UMPL_ELIMINATE_64BIT
+long inv_q30_div(long a, long b)
+{
+    long long temp;
+    long result;
+    temp = (((long long) a) << 30) / b;
+    result = (long) temp;
+    return result;
+}
+#endif
+
+/** Performs a multiply and shift by shift. These are good functions to write
+ * in assembly on with devices with small memory where you want to get rid of
+ * the long long which some assemblers don't handle well
+ * @param[in] a
+ * @param[in] b
+ * @return ((long long)a*b)<<shift
+*/
+#ifndef UMPL_ELIMINATE_64BIT
+long inv_q_shift_mult(long a, long b, int shift)
+{
+    long result;
+    result = (long)( ((long long)a * b) >> shift );
+    return result;
+}
+#endif
 
 void inv_q_mult(const long *q1, const long *q2, long *qProd)
 {
     INVENSENSE_FUNC_START;
-    qProd[0] = (long)(((long long)q1[0] * q2[0] - (long long)q1[1] * q2[1] -
-                       (long long)q1[2] * q2[2] -
-                       (long long)q1[3] * q2[3]) >> 30);
-    qProd[1] =
-        (int)(((long long)q1[0] * q2[1] + (long long)q1[1] * q2[0] +
-               (long long)q1[2] * q2[3] - (long long)q1[3] * q2[2]) >> 30);
-    qProd[2] =
-        (long)(((long long)q1[0] * q2[2] - (long long)q1[1] * q2[3] +
-                (long long)q1[2] * q2[0] + (long long)q1[3] * q2[1]) >> 30);
-    qProd[3] =
-        (long)(((long long)q1[0] * q2[3] + (long long)q1[1] * q2[2] -
-                (long long)q1[2] * q2[1] + (long long)q1[3] * q2[0]) >> 30);
+    qProd[0] = inv_q30_mult(q1[0],q2[0]) - inv_q30_mult(q1[1],q2[1]) -
+        inv_q30_mult(q1[2], q2[2]) - inv_q30_mult(q1[3], q2[3]);
+
+    qProd[1] = inv_q30_mult(q1[0],q2[1]) + inv_q30_mult(q1[1],q2[0]) +
+        inv_q30_mult(q1[2], q2[3]) - inv_q30_mult(q1[3], q2[2]);
+
+    qProd[2] = inv_q30_mult(q1[0],q2[2]) - inv_q30_mult(q1[1],q2[3]) +
+        inv_q30_mult(q1[2], q2[0]) + inv_q30_mult(q1[3], q2[1]);
+
+    qProd[3] = inv_q30_mult(q1[0],q2[3]) + inv_q30_mult(q1[1],q2[2]) -
+        inv_q30_mult(q1[2], q2[1]) + inv_q30_mult(q1[3], q2[0]);
 }
 
 void inv_q_add(long *q1, long *q2, long *qSum)
@@ -120,25 +155,31 @@ void inv_q_add(long *q1, long *q2, long *qSum)
     qSum[3] = q1[3] + q2[3];
 }
 
-void inv_q_normalize(long *q)
+void inv_vector_normalize(long *vec, int length)
 {
     INVENSENSE_FUNC_START;
     double normSF = 0;
-    int i;
-    for (i = 0; i < 4; i++) {
-        normSF += ((double)q[i]) / 1073741824L * ((double)q[i]) / 1073741824L;
+    int ii;
+    for (ii = 0; ii < length; ii++) {
+        normSF += inv_q30_to_double(vec[ii]) * inv_q30_to_double(vec[ii]);
     }
     if (normSF > 0) {
         normSF = 1 / sqrt(normSF);
-        for (i = 0; i < 4; i++) {
-            q[i] = (int)((double)q[i] * normSF);
+        for (ii = 0; ii < length; ii++) {
+            vec[ii] = (int)((double)vec[ii] * normSF);
         }
     } else {
-        q[0] = 1073741824L;
-        q[1] = 0;
-        q[2] = 0;
-        q[3] = 0;
+        vec[0] = 1073741824L;
+        for (ii = 1; ii < length; ii++) {
+            vec[ii] = 0;
+        }
     }
+}
+
+void inv_q_normalize(long *q)
+{
+    INVENSENSE_FUNC_START;
+    inv_vector_normalize(q, 4);
 }
 
 void inv_q_invert(const long *q, long *qInverted)
@@ -159,7 +200,7 @@ void inv_q_multf(const float *q1, const float *q2, float *qProd)
     qProd[3] = (q1[0] * q2[3] + q1[1] * q2[2] - q1[2] * q2[1] + q1[3] * q2[0]);
 }
 
-void inv_q_addf(float *q1, float *q2, float *qSum)
+void inv_q_addf(const float *q1, const float *q2, float *qSum)
 {
     INVENSENSE_FUNC_START;
     qSum[0] = q1[0] + q2[0];
@@ -250,6 +291,29 @@ void inv_quaternion_to_rotation(const long *quat, long *rot)
                                                       quat[0]) - 1073741824L;
 }
 
+/**
+ * Converts a quaternion to a rotation vector. A rotation vector is
+ * a method to represent a 4-element quaternion vector in 3-elements.
+ * To get the quaternion from the 3-elements, The last 3-elements of
+ * the quaternion will be the given rotation vector. The first element
+ * of the quaternion will be the positive value that will be required
+ * to make the magnitude of the quaternion 1.0 or 2^30 in fixed point units.
+ * @param[in] quat 4-element quaternion in fixed point. One is 2^30.
+ * @param[out] rot Rotation vector in fixed point. One is 2^30.
+ */
+void inv_quaternion_to_rotation_vector(const long *quat, long *rot)
+{
+    rot[0] = quat[1];
+    rot[1] = quat[2];
+    rot[2] = quat[3];
+
+    if (quat[0] < 0.0) {
+        rot[0] = -rot[0];
+        rot[1] = -rot[1];
+        rot[2] = -rot[2];
+    }
+}
+
 /** Converts a 32-bit long to a big endian byte stream */
 unsigned char *inv_int32_to_big8(long x, unsigned char *big8)
 {
@@ -266,6 +330,22 @@ long inv_big8_to_int32(const unsigned char *big8)
     long x;
     x = ((long)big8[0] << 24) | ((long)big8[1] << 16) | ((long)big8[2] << 8) |
         ((long)big8[3]);
+    return x;
+}
+
+/** Converts a big endian byte stream into a 16-bit integer (short) */
+short inv_big8_to_int16(const unsigned char *big8)
+{
+    short x;
+    x = ((short)big8[0] << 8) | ((short)big8[1]);
+    return x;
+}
+
+/** Converts a little endian byte stream into a 16-bit integer (short) */
+short inv_little8_to_int16(const unsigned char *little8)
+{
+    short x;
+    x = ((short)little8[1] << 8) | ((short)little8[0]);
     return x;
 }
 
@@ -359,7 +439,7 @@ float inv_wrap_angle(float ang)
 
 /** Finds the minimum angle difference ang1-ang2 such that difference
  * is between [-M_PI,M_PI]
- * @param[in] ang1 
+ * @param[in] ang1
  * @param[in] ang2
  * @return angle difference ang1-ang2
  */

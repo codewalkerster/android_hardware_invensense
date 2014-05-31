@@ -1,28 +1,16 @@
 /*
  $License:
-   Copyright 2011 InvenSense, Inc.
-
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
-
- http://www.apache.org/licenses/LICENSE-2.0
-
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
-  $
+    Copyright (C) 2011 InvenSense Corporation, All Rights Reserved.
+ $
  */
 
 /******************************************************************************
  *
- * $Id: mldl_cfg_mpu.c 5653 2011-06-16 21:06:55Z nroyer $
+ * $Id: mldl_cfg_mpu.c 6132 2011-10-01 03:17:27Z mcaramello $
  *
  *****************************************************************************/
 
-/** 
+/**
  *  @addtogroup MLDL
  *
  *  @{
@@ -34,15 +22,17 @@
 /* - Include Files. - */
 /* ------------------ */
 
+#include <string.h>
 #include <stddef.h>
 #include "mldl_cfg.h"
 #include "mlsl.h"
 #include "mpu.h"
+#include "mldl_print_cfg.h"
 
 #ifdef LINUX
 #include <sys/ioctl.h>
+#include "errno.h"
 #endif
-
 #include "log.h"
 #undef MPL_LOG_TAG
 #define MPL_LOG_TAG "MPL-mldl_cfg_mpu:"
@@ -55,132 +45,6 @@
 /* ---------------------- */
 /* -  Static Functions. - */
 /* ---------------------- */
-void mpu_print_cfg(struct mldl_cfg * mldl_cfg)
-{
-    struct mpu_platform_data   *pdata   = mldl_cfg->pdata;
-    struct ext_slave_platform_data *accel   = &mldl_cfg->pdata->accel;
-    struct ext_slave_platform_data *compass = &mldl_cfg->pdata->compass;
-    struct ext_slave_platform_data *pressure = &mldl_cfg->pdata->pressure;
-
-    MPL_LOGD("mldl_cfg.addr             = %02x\n", mldl_cfg->addr);
-    MPL_LOGD("mldl_cfg.int_config       = %02x\n", mldl_cfg->int_config);
-    MPL_LOGD("mldl_cfg.ext_sync         = %02x\n", mldl_cfg->ext_sync);
-    MPL_LOGD("mldl_cfg.full_scale       = %02x\n", mldl_cfg->full_scale);
-    MPL_LOGD("mldl_cfg.lpf              = %02x\n", mldl_cfg->lpf);
-    MPL_LOGD("mldl_cfg.clk_src          = %02x\n", mldl_cfg->clk_src);
-    MPL_LOGD("mldl_cfg.divider          = %02x\n", mldl_cfg->divider);
-    MPL_LOGD("mldl_cfg.dmp_enable       = %02x\n", mldl_cfg->dmp_enable);
-    MPL_LOGD("mldl_cfg.fifo_enable      = %02x\n", mldl_cfg->fifo_enable);
-    MPL_LOGD("mldl_cfg.dmp_cfg1         = %02x\n", mldl_cfg->dmp_cfg1);
-    MPL_LOGD("mldl_cfg.dmp_cfg2         = %02x\n", mldl_cfg->dmp_cfg2);
-    MPL_LOGD("mldl_cfg.offset_tc[0]     = %02x\n", mldl_cfg->offset_tc[0]);
-    MPL_LOGD("mldl_cfg.offset_tc[1]     = %02x\n", mldl_cfg->offset_tc[1]);
-    MPL_LOGD("mldl_cfg.offset_tc[2]     = %02x\n", mldl_cfg->offset_tc[2]);
-    MPL_LOGD("mldl_cfg.silicon_revision = %02x\n", mldl_cfg->silicon_revision);
-    MPL_LOGD("mldl_cfg.product_id       = %02x\n", mldl_cfg->product_id);
-    MPL_LOGD("mldl_cfg.gyro_sens_trim   = %02x\n", mldl_cfg->gyro_sens_trim);
-#if defined CONFIG_MPU_SENSORS_MPU6050A2 || defined CONFIG_MPU_SENSORS_MPU6050B1
-    MPL_LOGD("mldl_cfg.accel_sens_trim   = %02x\n", mldl_cfg->accel_sens_trim);
-#endif
-
-    if (mldl_cfg->accel) {
-        MPL_LOGD("slave_accel->suspend      = %02x\n", (int)mldl_cfg->accel->suspend);
-        MPL_LOGD("slave_accel->resume       = %02x\n", (int)mldl_cfg->accel->resume);
-        MPL_LOGD("slave_accel->read         = %02x\n", (int)mldl_cfg->accel->read);
-        MPL_LOGD("slave_accel->type         = %02x\n", mldl_cfg->accel->type);
-        MPL_LOGD("slave_accel->read_reg     = %02x\n",
-                 mldl_cfg->accel->read_reg);
-        MPL_LOGD("slave_accel->read_len     = %02x\n",
-                 mldl_cfg->accel->read_len);
-        MPL_LOGD("slave_accel->endian       = %02x\n", mldl_cfg->accel->endian);
-        MPL_LOGD("slave_accel->range.mantissa= %02x\n", (int)mldl_cfg->accel->range.mantissa);
-        MPL_LOGD("slave_accel->range.fraction= %02x\n", (int)mldl_cfg->accel->range.fraction);
-    } else {
-        MPL_LOGD("slave_accel               = NULL\n");
-    }
-
-    if (mldl_cfg->compass) {
-        MPL_LOGD("slave_compass->suspend    = %02x\n", (int)mldl_cfg->compass->suspend);
-        MPL_LOGD("slave_compass->resume     = %02x\n", (int)mldl_cfg->compass->resume);
-        MPL_LOGD("slave_compass->read       = %02x\n", (int)mldl_cfg->compass->read);
-        MPL_LOGD("slave_compass->type       = %02x\n", mldl_cfg->compass->type);
-        MPL_LOGD("slave_compass->read_reg   = %02x\n",
-                 mldl_cfg->compass->read_reg);
-        MPL_LOGD("slave_compass->read_len   = %02x\n",
-                 mldl_cfg->compass->read_len);
-        MPL_LOGD("slave_compass->endian     = %02x\n", mldl_cfg->compass->endian);
-        MPL_LOGD("slave_compass->range.mantissa= %02x\n", (int)mldl_cfg->compass->range.mantissa);
-        MPL_LOGD("slave_compass->range.fraction= %02x\n", (int)mldl_cfg->compass->range.fraction);
-    } else {
-        MPL_LOGD("slave_compass             = NULL\n");
-    }
-
-    if (mldl_cfg->pressure) {
-        MPL_LOGD("slave_pressure->suspend    = %02x\n", (int)mldl_cfg->pressure->suspend);
-        MPL_LOGD("slave_pressure->resume     = %02x\n", (int)mldl_cfg->pressure->resume);
-        MPL_LOGD("slave_pressure->read       = %02x\n", (int)mldl_cfg->pressure->read);
-        MPL_LOGD("slave_pressure->type       = %02x\n", mldl_cfg->pressure->type);
-        MPL_LOGD("slave_pressure->read_reg   = %02x\n",
-                 mldl_cfg->pressure->read_reg);
-        MPL_LOGD("slave_pressure->read_len   = %02x\n",
-                 mldl_cfg->pressure->read_len);
-        MPL_LOGD("slave_pressure->endian     = %02x\n", mldl_cfg->pressure->endian);
-        MPL_LOGD("slave_pressure->range.mantissa= %02x\n", (int)mldl_cfg->pressure->range.mantissa);
-        MPL_LOGD("slave_pressure->range.fraction= %02x\n", (int)mldl_cfg->pressure->range.fraction);
-    } else {
-        MPL_LOGD("slave_pressure             = NULL\n");
-    }
-
-    MPL_LOGD("accel->get_slave_descr    = %x\n",(unsigned int) accel->get_slave_descr);
-    MPL_LOGD("accel->adapt_num          = %02x\n", accel->adapt_num);
-    MPL_LOGD("accel->bus                = %02x\n", accel->bus);
-    MPL_LOGD("accel->address            = %02x\n", accel->address);
-    MPL_LOGD("accel->orientation        = \n"
-             "                            %2d %2d %2d\n"
-             "                            %2d %2d %2d\n"
-             "                            %2d %2d %2d\n",
-             accel->orientation[0],accel->orientation[1],accel->orientation[2],
-             accel->orientation[3],accel->orientation[4],accel->orientation[5],
-             accel->orientation[6],accel->orientation[7],accel->orientation[8]);
-    MPL_LOGD("compass->get_slave_descr  = %x\n",(unsigned int) compass->get_slave_descr);
-    MPL_LOGD("compass->adapt_num        = %02x\n", compass->adapt_num);
-    MPL_LOGD("compass->bus              = %02x\n", compass->bus);
-    MPL_LOGD("compass->address          = %02x\n", compass->address);
-    MPL_LOGD("compass->orientation      = \n"
-             "                            %2d %2d %2d\n"
-             "                            %2d %2d %2d\n"
-             "                            %2d %2d %2d\n",
-             compass->orientation[0],compass->orientation[1],compass->orientation[2],
-             compass->orientation[3],compass->orientation[4],compass->orientation[5],
-             compass->orientation[6],compass->orientation[7],compass->orientation[8]);
-    MPL_LOGD("pressure->get_slave_descr  = %x\n",(unsigned int) pressure->get_slave_descr);
-    MPL_LOGD("pressure->adapt_num        = %02x\n", pressure->adapt_num);
-    MPL_LOGD("pressure->bus              = %02x\n", pressure->bus);
-    MPL_LOGD("pressure->address          = %02x\n", pressure->address);
-    MPL_LOGD("pressure->orientation      = \n"
-             "                            %2d %2d %2d\n"
-             "                            %2d %2d %2d\n"
-             "                            %2d %2d %2d\n",
-             pressure->orientation[0],pressure->orientation[1],pressure->orientation[2],
-             pressure->orientation[3],pressure->orientation[4],pressure->orientation[5],
-             pressure->orientation[6],pressure->orientation[7],pressure->orientation[8]);
-    
-    MPL_LOGD("pdata->int_config         = %02x\n", pdata->int_config);
-    MPL_LOGD("pdata->level_shifter      = %02x\n", pdata->level_shifter);
-    MPL_LOGD("pdata->orientation        = \n"
-             "                            %2d %2d %2d\n"
-             "                            %2d %2d %2d\n"
-             "                            %2d %2d %2d\n",
-             pdata->orientation[0],pdata->orientation[1],pdata->orientation[2],
-             pdata->orientation[3],pdata->orientation[4],pdata->orientation[5],
-             pdata->orientation[6],pdata->orientation[7],pdata->orientation[8]);
-
-    MPL_LOGD("Struct sizes: mldl_cfg: %d, "
-             "ext_slave_descr:%d, mpu_platform_data:%d: RamOffset: %d\n", 
-             sizeof(struct mldl_cfg), sizeof(struct ext_slave_descr), 
-             sizeof(struct mpu_platform_data), 
-             offsetof(struct mldl_cfg, ram));
-}
 
 /******************************************************************************
  ******************************************************************************
@@ -188,12 +52,479 @@ void mpu_print_cfg(struct mldl_cfg * mldl_cfg)
  ******************************************************************************
  *****************************************************************************/
 
-/** 
+static int mldl_cfg_push_gyro(void *gyro_handle, __u32 key,
+                              __u32 len, void *data)
+{
+    struct ext_slave_config config;
+    config.key = key;
+    config.len = len;
+    config.apply = 0;
+    config.data = data;
+    if (ioctl((int)gyro_handle, MPU_CONFIG_GYRO, &config))
+        return errno;
+    return 0;
+}
+
+static int mldl_cfg_pull_gyro(void *gyro_handle, __u32 key,
+                              __u32 len, void *data)
+{
+    struct ext_slave_config config;
+    config.key = key;
+    config.len = len;
+    config.apply = 0;
+    config.data = data;
+    if (ioctl((int)gyro_handle, MPU_GET_CONFIG_GYRO, &config))
+        return errno;
+
+    return 0;
+}
+
+static int mldl_cfg_push_mpu_ram(void *gyro_handle,
+                                 struct mpu_ram *mpu_ram)
+{
+    return mldl_cfg_push_gyro(gyro_handle, MPU_SLAVE_RAM, mpu_ram->length,
+                              mpu_ram->ram);
+}
+
+static int mldl_cfg_push_mpu_gyro_cfg(void *gyro_handle,
+                                      struct mpu_gyro_cfg *mpu_gyro_cfg)
+{
+    int result;
+    result = mldl_cfg_push_gyro(gyro_handle, MPU_SLAVE_INT_CONFIG,
+                                sizeof(mpu_gyro_cfg->int_config),
+                                &mpu_gyro_cfg->int_config);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_push_gyro(gyro_handle, MPU_SLAVE_EXT_SYNC,
+                                sizeof(mpu_gyro_cfg->ext_sync),
+                                &mpu_gyro_cfg->ext_sync);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_push_gyro(gyro_handle, MPU_SLAVE_FULL_SCALE,
+                                sizeof(mpu_gyro_cfg->full_scale),
+                                &mpu_gyro_cfg->full_scale);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_push_gyro(gyro_handle, MPU_SLAVE_LPF,
+                                sizeof(mpu_gyro_cfg->lpf),
+                                &mpu_gyro_cfg->lpf);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_push_gyro(gyro_handle, MPU_SLAVE_CLK_SRC,
+                                sizeof(mpu_gyro_cfg->clk_src),
+                                &mpu_gyro_cfg->clk_src);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_push_gyro(gyro_handle, MPU_SLAVE_DIVIDER,
+                                sizeof(mpu_gyro_cfg->divider),
+                                &mpu_gyro_cfg->divider);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_push_gyro(gyro_handle, MPU_SLAVE_DMP_ENABLE,
+                                sizeof(mpu_gyro_cfg->dmp_enable),
+                                &mpu_gyro_cfg->dmp_enable);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_push_gyro(gyro_handle, MPU_SLAVE_FIFO_ENABLE,
+                                sizeof(mpu_gyro_cfg->fifo_enable),
+                                &mpu_gyro_cfg->fifo_enable);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_push_gyro(gyro_handle, MPU_SLAVE_DMP_CFG1,
+                                sizeof(mpu_gyro_cfg->dmp_cfg1),
+                                &mpu_gyro_cfg->dmp_cfg1);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_push_gyro(gyro_handle, MPU_SLAVE_DMP_CFG2,
+                                sizeof(mpu_gyro_cfg->dmp_cfg2),
+                                &mpu_gyro_cfg->dmp_cfg2);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    return result;
+}
+
+static int mldl_cfg_push_mpu_offsets(void *gyro_handle,
+                                     struct mpu_offsets *mpu_offsets)
+{
+    int result;
+    result = mldl_cfg_push_gyro(gyro_handle, MPU_SLAVE_TC,
+                                sizeof(mpu_offsets->tc),
+                                mpu_offsets->tc);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_push_gyro(gyro_handle, MPU_SLAVE_GYRO,
+                                sizeof(mpu_offsets->gyro),
+                                mpu_offsets->gyro);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    return result;
+}
+
+static int mldl_cfg_push_inv_mpu_cfg(void *gyro_handle,
+                                     struct inv_mpu_cfg *inv_mpu_cfg)
+{
+    int result;
+    result = ioctl((int) gyro_handle, MPU_SET_IGNORE_SYSTEM_SUSPEND,
+                   inv_mpu_cfg->ignore_system_suspend);
+    if (result)
+        result = errno;
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    return result;
+}
+
+static int mldl_cfg_push(void *gyro_handle,
+                         struct mldl_cfg *mldl_cfg)
+{
+    int result;
+    result = mldl_cfg_push_mpu_ram(gyro_handle, mldl_cfg->mpu_ram);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_push_mpu_gyro_cfg(gyro_handle, mldl_cfg->mpu_gyro_cfg);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_push_mpu_offsets(gyro_handle, mldl_cfg->mpu_offsets);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_push_inv_mpu_cfg(gyro_handle, mldl_cfg->inv_mpu_cfg);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    return result;
+}
+
+static int mldl_cfg_pull_mpu_ram(void *gyro_handle,
+                                 struct mpu_ram *mpu_ram)
+{
+    return mldl_cfg_pull_gyro(gyro_handle, MPU_SLAVE_RAM, mpu_ram->length,
+                              mpu_ram->ram);
+}
+
+static int mldl_cfg_pull_mpu_gyro_cfg(void *gyro_handle,
+                                      struct mpu_gyro_cfg *mpu_gyro_cfg)
+{
+    int result;
+    result = mldl_cfg_pull_gyro(gyro_handle, MPU_SLAVE_INT_CONFIG,
+                                sizeof(mpu_gyro_cfg->int_config),
+                                &mpu_gyro_cfg->int_config);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_pull_gyro(gyro_handle, MPU_SLAVE_EXT_SYNC,
+                                sizeof(mpu_gyro_cfg->ext_sync),
+                                &mpu_gyro_cfg->ext_sync);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_pull_gyro(gyro_handle, MPU_SLAVE_FULL_SCALE,
+                                sizeof(mpu_gyro_cfg->full_scale),
+                                &mpu_gyro_cfg->full_scale);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_pull_gyro(gyro_handle, MPU_SLAVE_LPF,
+                                sizeof(mpu_gyro_cfg->lpf),
+                                &mpu_gyro_cfg->lpf);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_pull_gyro(gyro_handle, MPU_SLAVE_CLK_SRC,
+                                sizeof(mpu_gyro_cfg->clk_src),
+                                &mpu_gyro_cfg->clk_src);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_pull_gyro(gyro_handle, MPU_SLAVE_DIVIDER,
+                                sizeof(mpu_gyro_cfg->divider),
+                                &mpu_gyro_cfg->divider);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_pull_gyro(gyro_handle, MPU_SLAVE_DMP_ENABLE,
+                                sizeof(mpu_gyro_cfg->dmp_enable),
+                                &mpu_gyro_cfg->dmp_enable);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_pull_gyro(gyro_handle, MPU_SLAVE_FIFO_ENABLE,
+                                sizeof(mpu_gyro_cfg->fifo_enable),
+                                &mpu_gyro_cfg->fifo_enable);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_pull_gyro(gyro_handle, MPU_SLAVE_DMP_CFG1,
+                                sizeof(mpu_gyro_cfg->dmp_cfg1),
+                                &mpu_gyro_cfg->dmp_cfg1);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_pull_gyro(gyro_handle, MPU_SLAVE_DMP_CFG2,
+                                sizeof(mpu_gyro_cfg->dmp_cfg2),
+                                &mpu_gyro_cfg->dmp_cfg2);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    return result;
+}
+
+static int mldl_cfg_pull_mpu_offsets(void *gyro_handle,
+                                     struct mpu_offsets *mpu_offsets)
+{
+    int result;
+    result = mldl_cfg_pull_gyro(gyro_handle, MPU_SLAVE_TC,
+                                sizeof(mpu_offsets->tc),
+                                mpu_offsets->tc);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_pull_gyro(gyro_handle, MPU_SLAVE_GYRO,
+                                sizeof(mpu_offsets->gyro),
+                                mpu_offsets->gyro);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    return result;
+}
+static int mldl_cfg_pull_mpu_chip_info(void *gyro_handle,
+                                       struct mpu_chip_info *mpu_chip_info)
+{
+    int result;
+    result = mldl_cfg_pull_gyro(gyro_handle, MPU_SLAVE_ADDR,
+                                sizeof(mpu_chip_info->addr),
+                                &mpu_chip_info->addr);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_pull_gyro(gyro_handle, MPU_SLAVE_PRODUCT_REVISION,
+                                sizeof(mpu_chip_info->product_revision),
+                                &mpu_chip_info->product_revision);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_pull_gyro(gyro_handle, MPU_SLAVE_SILICON_REVISION,
+                                sizeof(mpu_chip_info->silicon_revision),
+                                &mpu_chip_info->silicon_revision);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_pull_gyro(gyro_handle, MPU_SLAVE_PRODUCT_ID,
+                                sizeof(mpu_chip_info->product_id),
+                                &mpu_chip_info->product_id);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_pull_gyro(gyro_handle, MPU_SLAVE_GYRO_SENS_TRIM,
+                                sizeof(mpu_chip_info->gyro_sens_trim),
+                                &mpu_chip_info->gyro_sens_trim);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_pull_gyro(gyro_handle, MPU_SLAVE_ACCEL_SENS_TRIM,
+                                sizeof(mpu_chip_info->accel_sens_trim),
+                                &mpu_chip_info->accel_sens_trim);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    return result;
+}
+
+static int mldl_cfg_pull_inv_mpu_cfg(void *gyro_handle,
+                                     struct inv_mpu_cfg *inv_mpu_cfg)
+{
+    int result;
+    result = ioctl((int) gyro_handle, MPU_GET_REQUESTED_SENSORS,
+                   &inv_mpu_cfg->requested_sensors);
+    if (result)
+        result = errno;
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = ioctl((int) gyro_handle, MPU_GET_IGNORE_SYSTEM_SUSPEND,
+                   &inv_mpu_cfg->ignore_system_suspend);
+    if (result)
+        result = errno;
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    return result;
+}
+static int mldl_cfg_pull_inv_mpu_state(void *gyro_handle,
+                                       struct inv_mpu_state *inv_mpu_state)
+{
+    int result;
+    result = ioctl((int) gyro_handle, MPU_GET_MLDL_STATUS,
+                   &inv_mpu_state->status);
+    if (result)
+        result = errno;
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = ioctl((int) gyro_handle, MPU_GET_I2C_SLAVES_ENABLED,
+                   &inv_mpu_state->i2c_slaves_enabled);
+    if (result)
+        result = errno;
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    return result;
+}
+static int mldl_cfg_pull_ext_slave_descr(void *gyro_handle,
+                                         struct ext_slave_descr *slave)
+{
+    if (ioctl((int)gyro_handle, MPU_GET_EXT_SLAVE_DESCR, slave))
+        return errno;
+    return 0;
+}
+static int mldl_cfg_pull_mpu_platform_data(void *gyro_handle,
+                                           struct mpu_platform_data *pdata)
+{
+    if (ioctl((int)gyro_handle, MPU_GET_MPU_PLATFORM_DATA, pdata))
+        return errno;
+    return 0;
+}
+static int mldl_cfg_pull_ext_slave_platform_data(
+    void *gyro_handle,
+    struct ext_slave_platform_data *pdata_slave)
+{
+    if (ioctl((int)gyro_handle,
+              MPU_GET_EXT_SLAVE_PLATFORM_DATA, pdata_slave))
+        return errno;
+    return 0;
+}
+
+static int mldl_cfg_pull(void *gyro_handle,
+                         struct mldl_cfg *mldl_cfg)
+{
+    int result;
+    int ii;
+    result = mldl_cfg_pull_mpu_ram(gyro_handle, mldl_cfg->mpu_ram);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_pull_mpu_gyro_cfg(gyro_handle, mldl_cfg->mpu_gyro_cfg);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_pull_mpu_offsets(gyro_handle, mldl_cfg->mpu_offsets);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_pull_mpu_chip_info(gyro_handle, mldl_cfg->mpu_chip_info);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_pull_inv_mpu_cfg(gyro_handle, mldl_cfg->inv_mpu_cfg);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    result = mldl_cfg_pull_inv_mpu_state(gyro_handle, mldl_cfg->inv_mpu_state);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    for (ii = 0; ii < EXT_SLAVE_NUM_TYPES; ii++) {
+        if (!mldl_cfg->slave[ii])
+            continue;
+        mldl_cfg->slave[ii]->type = ii;
+        result = mldl_cfg_pull_ext_slave_descr(gyro_handle,
+                                               mldl_cfg->slave[ii]);
+        if (result == INV_ERROR_INVALID_MODULE) {
+            mldl_cfg->slave[ii] = NULL;
+            result = 0;
+        } else if (result) {
+            LOG_RESULT_LOCATION(result);
+            return result;
+        }
+    }
+    result = mldl_cfg_pull_mpu_platform_data(gyro_handle, mldl_cfg->pdata);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    for (ii = 0; ii < EXT_SLAVE_NUM_TYPES; ii++) {
+        if (!mldl_cfg->pdata_slave[ii])
+            continue;
+        mldl_cfg->pdata_slave[ii]->type = ii;
+        result = mldl_cfg_pull_ext_slave_platform_data(
+            gyro_handle,
+            mldl_cfg->pdata_slave[ii]);
+        if (result == INV_ERROR_INVALID_MODULE) {
+            mldl_cfg->pdata_slave[ii] = NULL;
+            result = 0;
+        } else if (result) {
+            LOG_RESULT_LOCATION(result);
+            return result;
+        }
+    }
+    return result;
+}
+
+/**
  * Initializes the pdata structure to defaults.
  *
  * Opens the device to read silicon revision, product id and whoami.  Leaves
  * the device in suspended state for low power.
- * 
+ *
  * @param mldl_cfg handle to the config structure
  * @param mlsl_handle handle to the mpu serial layer
  * @param accel_handle handle to the accel serial layer
@@ -203,14 +534,15 @@ void mpu_print_cfg(struct mldl_cfg * mldl_cfg)
  * @return INV_SUCCESS if silicon revision, product id and woami are supported
  *         by this software.
  */
-int inv_mpu_open(struct mldl_cfg *mldl_cfg, 
+int inv_mpu_open(struct mldl_cfg *mldl_cfg,
                  void *mlsl_handle,
                  void *accel_handle,
                  void *compass_handle,
                  void *pressure_handle)
 {
     int result;
-    result = ioctl((int)mlsl_handle, MPU_GET_MPU_CONFIG, mldl_cfg);
+
+    result = mldl_cfg_pull(mlsl_handle, mldl_cfg);
     if (result) {
         LOG_RESULT_LOCATION(result);
         return result;
@@ -222,21 +554,23 @@ int inv_mpu_open(struct mldl_cfg *mldl_cfg,
         LOG_RESULT_LOCATION(result);
         return result;
     }
+    mldl_print_cfg(mldl_cfg);
+
     return result;
 }
 
-/** 
+/**
  * Stub for driver close.  Just verify that the devices are suspended
- * 
+ *
  * @param mldl_cfg handle to the config structure
  * @param mlsl_handle handle to the mpu serial layer
  * @param accel_handle handle to the accel serial layer
  * @param compass_handle handle to the compass serial layer
  * @param pressure_handle handle to the compass serial layer
- * 
+ *
  * @return INV_SUCCESS or non-zero error code
  */
-int inv_mpu_close(struct mldl_cfg *mldl_cfg, 
+int inv_mpu_close(struct mldl_cfg *mldl_cfg,
 		  void *mlsl_handle,
 		  void *accel_handle,
 		  void *compass_handle,
@@ -249,71 +583,131 @@ int inv_mpu_close(struct mldl_cfg *mldl_cfg,
     return result;
 }
 
-int inv_mpu_resume(struct mldl_cfg* mldl_cfg, 
-                   void *mlsl_handle, 
-                   void *accel_handle, 
-                   void *compass_handle, 
+/**
+ *  @brief  resume the MPU device and all the other sensor
+ *          devices from their low power state.
+ *
+ *  @mldl_cfg
+ *              pointer to the configuration structure
+ *  @mlsl_handle
+ *              the main file handle to the MPU device.
+ *  @accel_handle
+ *              an handle to the accelerometer device, if sitting
+ *              onto a separate bus. Can match mlsl_handle if
+ *              the accelerometer device operates on the same
+ *              primary bus of MPU.
+ *  @compass_handle
+ *              an handle to the compass device, if sitting
+ *              onto a separate bus. Can match mlsl_handle if
+ *              the compass device operates on the same
+ *              primary bus of MPU.
+ *  @pressure_handle
+ *              an handle to the pressure sensor device, if sitting
+ *              onto a separate bus. Can match mlsl_handle if
+ *              the pressure sensor device operates on the same
+ *              primary bus of MPU.
+ *  @sensors
+ *              sensor enable mask requested.
+ *
+ *  @return  INV_SUCCESS or a non-zero error code.
+ */
+int inv_mpu_resume(struct mldl_cfg* mldl_cfg,
+                   void *mlsl_handle,
+                   void *accel_handle,
+                   void *compass_handle,
                    void *pressure_handle,
                    unsigned long sensors)
 {
     int result;
-    
-    mldl_cfg->requested_sensors = sensors;
-    result = ioctl((int)mlsl_handle, MPU_SET_MPU_CONFIG, mldl_cfg);
+
+    result = mldl_cfg_push(mlsl_handle, mldl_cfg);
     if (result) {
         LOG_RESULT_LOCATION(result);
         return result;
     }
-    result = ioctl((int)mlsl_handle, MPU_RESUME, NULL);
+
+    mldl_print_cfg(mldl_cfg);
+
+    result = ioctl((int)mlsl_handle, MPU_RESUME, sensors);
+    if (result)
+        result = errno;
     if (result) {
         LOG_RESULT_LOCATION(result);
         return result;
     }
-    result = ioctl((int)mlsl_handle, MPU_GET_MPU_CONFIG, mldl_cfg);
+    result = mldl_cfg_pull(mlsl_handle, mldl_cfg);
     if (result) {
         LOG_RESULT_LOCATION(result);
         return result;
     }
-    //MPL_LOGI("%s: Resuming to %04lx\n", __func__, mldl_cfg->requested_sensors);
+
+    MPL_LOGI("%s(,,,,%04lx) -> %04lx\n", __func__,
+             sensors,
+             (unsigned long)mldl_cfg->inv_mpu_cfg->requested_sensors);
 
     return result;
 }
 
 
-int inv_mpu_suspend(struct mldl_cfg *mldl_cfg, 
-          	    void *mlsl_handle,
+int inv_mpu_suspend(struct mldl_cfg *mldl_cfg,
+                    void *mlsl_handle,
                     void *accel_handle,
                     void *compass_handle,
                     void *pressure_handle,
                     unsigned long sensors)
 {
     int result;
-    unsigned long requested = mldl_cfg->requested_sensors;
 
-    mldl_cfg->requested_sensors = (~sensors) & INV_ALL_SENSORS;
-    //MPL_LOGI("%s: suspending sensors to %04lx\n", __func__,
-    //         mldl_cfg->requested_sensors);
-
-    result = ioctl((int)mlsl_handle, MPU_SET_MPU_CONFIG, mldl_cfg);
+    result = mldl_cfg_push(mlsl_handle, mldl_cfg);
     if (result) {
         LOG_RESULT_LOCATION(result);
         return result;
     }
-    result = ioctl((int)mlsl_handle, MPU_SUSPEND, NULL);
+    result = ioctl((int)mlsl_handle, MPU_SUSPEND, sensors);
+    if (result)
+        result = errno;
     if (result) {
         LOG_RESULT_LOCATION(result);
         return result;
     }
-    result = ioctl((int)mlsl_handle, MPU_GET_MPU_CONFIG, mldl_cfg);
+    result = mldl_cfg_pull(mlsl_handle, mldl_cfg);
     if (result) {
         LOG_RESULT_LOCATION(result);
         return result;
     }
 
-    mldl_cfg->requested_sensors = requested;
-    //MPL_LOGI("%s: Will resume next to %04lx\n", __func__, requested);
+    mldl_print_cfg(mldl_cfg);
 
+    MPL_LOGI("%s(,,,,%04lx) -> %04lx\n", __func__,
+             sensors,
+             (unsigned long)mldl_cfg->inv_mpu_cfg->requested_sensors);
     return result;
+}
+
+/**
+ * Sets the firmware cache
+ *
+ * @param mldl_cfg pointer to the configuration
+ * @param mlsl_handle serial handle
+ * @param data firmware
+ * @param size sizeof the firmware
+ *
+ * @return INV_SUCCESS or non-zero error code
+ */
+int inv_mpu_set_firmware(struct mldl_cfg *mldl_cfg,
+			 void *mlsl_handle,
+			 const unsigned char *data,
+			 int size)
+{
+#if INV_CACHE_DMP == 0
+#error "mldl_cfg_mpu.c does not support INV_CACHE_DMP == 0"
+#endif
+    if (size > mldl_cfg->mpu_ram->length) {
+        LOG_RESULT_LOCATION(INV_ERROR_INVALID_PARAMETER);
+        return INV_ERROR_INVALID_PARAMETER;
+    }
+    memcpy(mldl_cfg->mpu_ram->ram, data, size);
+    return INV_SUCCESS;
 }
 
 /**
@@ -329,11 +723,11 @@ int inv_mpu_suspend(struct mldl_cfg *mldl_cfg,
  * @return 0 or non-zero error code
  */
 int inv_mpu_slave_read(struct mldl_cfg *mldl_cfg,
-		void *gyro_handle,
-		void *slave_handle,
-		struct ext_slave_descr *slave,
-		struct ext_slave_platform_data *pdata,
-		unsigned char *data)
+                       void *gyro_handle,
+                       void *slave_handle,
+                       struct ext_slave_descr *slave,
+                       struct ext_slave_platform_data *pdata,
+                       unsigned char *data)
 {
     int result;
     if (!mldl_cfg || !gyro_handle || !data || !slave) {
@@ -342,14 +736,20 @@ int inv_mpu_slave_read(struct mldl_cfg *mldl_cfg,
     }
 
     switch (slave->type) {
-    case EXT_SLAVE_TYPE_ACCELEROMETER:
+    case EXT_SLAVE_TYPE_ACCEL:
         result = ioctl((int)gyro_handle, MPU_READ_ACCEL, data);
+        if (result)
+            result = errno;
         break;
     case EXT_SLAVE_TYPE_COMPASS:
         result = ioctl((int)gyro_handle, MPU_READ_COMPASS, data);
+        if (result)
+            result = errno;
         break;
     case EXT_SLAVE_TYPE_PRESSURE:
         result = ioctl((int)gyro_handle, MPU_READ_PRESSURE, data);
+        if (result)
+            result = errno;
         break;
     default:
         LOG_RESULT_LOCATION(INV_ERROR_INVALID_PARAMETER);
@@ -373,11 +773,11 @@ int inv_mpu_slave_read(struct mldl_cfg *mldl_cfg,
  * @return 0 or non-zero error code
  */
 int inv_mpu_slave_config(struct mldl_cfg *mldl_cfg,
-                     void *gyro_handle,
-                     void *slave_handle,
-                     struct ext_slave_config *data,
-                     struct ext_slave_descr *slave,
-                     struct ext_slave_platform_data *pdata)
+                         void *gyro_handle,
+                         void *slave_handle,
+                         struct ext_slave_config *data,
+                         struct ext_slave_descr *slave,
+                         struct ext_slave_platform_data *pdata)
 {
     int result;
     if (!mldl_cfg || !data || !slave || !pdata || !slave) {
@@ -386,8 +786,10 @@ int inv_mpu_slave_config(struct mldl_cfg *mldl_cfg,
     }
 
     switch (slave->type) {
-    case EXT_SLAVE_TYPE_ACCELEROMETER:
+    case EXT_SLAVE_TYPE_ACCEL:
         result = ioctl((int)gyro_handle, MPU_CONFIG_ACCEL, data);
+        if (result)
+            result = errno;
         if (result) {
             LOG_RESULT_LOCATION(result);
             return result;
@@ -395,6 +797,8 @@ int inv_mpu_slave_config(struct mldl_cfg *mldl_cfg,
         break;
     case EXT_SLAVE_TYPE_COMPASS:
         result = ioctl((int)gyro_handle, MPU_CONFIG_COMPASS, data);
+        if (result)
+            result = errno;
         if (result) {
             LOG_RESULT_LOCATION(result);
             return result;
@@ -402,6 +806,8 @@ int inv_mpu_slave_config(struct mldl_cfg *mldl_cfg,
         break;
     case EXT_SLAVE_TYPE_PRESSURE:
         result = ioctl((int)gyro_handle, MPU_CONFIG_PRESSURE, data);
+        if (result)
+            result = errno;
         if (result) {
             LOG_RESULT_LOCATION(result);
             return result;
@@ -444,7 +850,7 @@ int inv_mpu_get_slave_config(struct mldl_cfg *mldl_cfg,
         return INV_ERROR_INVALID_PARAMETER;
     }
     switch (slave->type) {
-    case EXT_SLAVE_TYPE_ACCELEROMETER:
+    case EXT_SLAVE_TYPE_ACCEL:
         result = ioctl((int)gyro_handle, MPU_GET_CONFIG_ACCEL, data);
         if (result) {
             LOG_RESULT_LOCATION(result);

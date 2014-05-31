@@ -1,24 +1,12 @@
 /*
  $License:
-   Copyright 2011 InvenSense, Inc.
-
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
-
- http://www.apache.org/licenses/LICENSE-2.0
-
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
-  $
+    Copyright (C) 2011 InvenSense Corporation, All Rights Reserved.
+ $
  */
 
 /******************************************************************************
  *
- * $Id: ml_stored_data.c 5641 2011-06-14 02:10:02Z mcaramello $
+ * $Id: ml_stored_data.c 6132 2011-10-01 03:17:27Z mcaramello $
  *
  *****************************************************************************/
 
@@ -42,7 +30,7 @@
 #include "mlstates.h"
 #include "checksum.h"
 #include "mlsupervisor.h"
-
+#include "mlMathFunc.h"
 #include "mlsl.h"
 #include "mlos.h"
 
@@ -185,38 +173,38 @@ inv_error_t inv_load_cal_V0(unsigned char *calData, unsigned short len)
     bin = FindTempBin(newTemp);
     LOADCAL_LOG("bin = %d", bin);
 
-    inv_obj.temp_data[bin][inv_obj.temp_ptrs[bin]] = newTemp;
-    LOADCAL_LOG("temp_data[%d][%d] = %f",
-                bin, inv_obj.temp_ptrs[bin],
-                inv_obj.temp_data[bin][inv_obj.temp_ptrs[bin]]);
-    inv_obj.x_gyro_temp_data[bin][inv_obj.temp_ptrs[bin]] =
+    inv_obj.gyro_tc->temp_data[bin][inv_obj.gyro_tc->temp_ptrs[bin]] = newTemp;
+    LOADCAL_LOG("gyro_tc->temp_data[%d][%d] = %f",
+                bin, inv_obj.gyro_tc->temp_ptrs[bin],
+                inv_obj.gyro_tc->temp_data[bin][inv_obj.gyro_tc->temp_ptrs[bin]]);
+    inv_obj.gyro_tc->x_gyro_temp_data[bin][inv_obj.gyro_tc->temp_ptrs[bin]] =
         ((float)newGyroData[0]) / 65536.f;
-    LOADCAL_LOG("x_gyro_temp_data[%d][%d] = %f\n",
-                bin, inv_obj.temp_ptrs[bin],
-                inv_obj.x_gyro_temp_data[bin][inv_obj.temp_ptrs[bin]]);
-    inv_obj.y_gyro_temp_data[bin][inv_obj.temp_ptrs[bin]] =
+    LOADCAL_LOG("gyro_tc->x_gyro_temp_data[%d][%d] = %f\n",
+                bin, inv_obj.gyro_tc->temp_ptrs[bin],
+                inv_obj.gyro_tc->x_gyro_temp_data[bin][inv_obj.gyro_tc->temp_ptrs[bin]]);
+    inv_obj.gyro_tc->y_gyro_temp_data[bin][inv_obj.gyro_tc->temp_ptrs[bin]] =
         ((float)newGyroData[0]) / 65536.f;
-    LOADCAL_LOG("y_gyro_temp_data[%d][%d] = %f\n",
-                bin, inv_obj.temp_ptrs[bin],
-                inv_obj.y_gyro_temp_data[bin][inv_obj.temp_ptrs[bin]]);
-    inv_obj.z_gyro_temp_data[bin][inv_obj.temp_ptrs[bin]] =
+    LOADCAL_LOG("gyro_tc->y_gyro_temp_data[%d][%d] = %f\n",
+                bin, inv_obj.gyro_tc->temp_ptrs[bin],
+                inv_obj.gyro_tc->y_gyro_temp_data[bin][inv_obj.gyro_tc->temp_ptrs[bin]]);
+    inv_obj.gyro_tc->z_gyro_temp_data[bin][inv_obj.gyro_tc->temp_ptrs[bin]] =
         ((float)newGyroData[0]) / 65536.f;
-    LOADCAL_LOG("z_gyro_temp_data[%d][%d] = %f\n",
-                bin, inv_obj.temp_ptrs[bin],
-                inv_obj.z_gyro_temp_data[bin][inv_obj.temp_ptrs[bin]]);
+    LOADCAL_LOG("gyro_tc->z_gyro_temp_data[%d][%d] = %f\n",
+                bin, inv_obj.gyro_tc->temp_ptrs[bin],
+                inv_obj.gyro_tc->z_gyro_temp_data[bin][inv_obj.gyro_tc->temp_ptrs[bin]]);
 
-    inv_obj.temp_ptrs[bin] = (inv_obj.temp_ptrs[bin] + 1) % PTS_PER_BIN;
-    LOADCAL_LOG("temp_ptrs[%d] = %d\n", bin, inv_obj.temp_ptrs[bin]);
+    inv_obj.gyro_tc->temp_ptrs[bin] = (inv_obj.gyro_tc->temp_ptrs[bin] + 1) % PTS_PER_BIN;
+    LOADCAL_LOG("gyro_tc->temp_ptrs[%d] = %d\n", bin, inv_obj.gyro_tc->temp_ptrs[bin]);
 
-    if (inv_obj.temp_ptrs[bin] == 0)
-        inv_obj.temp_valid_data[bin] = TRUE;
-    LOADCAL_LOG("temp_valid_data[%d] = %ld\n",
-                bin, inv_obj.temp_valid_data[bin]);
+    if (inv_obj.gyro_tc->temp_ptrs[bin] == 0)
+        inv_obj.gyro_tc->temp_valid_data[bin] = true;
+    LOADCAL_LOG("gyro_tc->temp_valid_data[%d] = %ld\n",
+                bin, inv_obj.gyro_tc->temp_valid_data[bin]);
 
-    inv_obj.got_no_motion_bias = TRUE;
-    LOADCAL_LOG("got_no_motion_bias = 1\n");
-    inv_obj.cal_loaded_flag = TRUE;
-    LOADCAL_LOG("cal_loaded_flag = 1\n");
+    inv_obj.lite_fusion->got_no_motion_bias = true;
+    LOADCAL_LOG("lite_fusion->got_no_motion_bias = 1\n");
+    inv_obj.sys->cal_loaded_flag = true;
+    LOADCAL_LOG("sys->cal_loaded_flag = 1\n");
 
     LOADCAL_LOG("Exiting inv_load_cal_V0\n");
     return INV_SUCCESS;
@@ -298,59 +286,56 @@ inv_error_t inv_load_cal_V1(unsigned char *calData, unsigned short len)
     LOADCAL_LOG("gyroBias[1] = %f\n", gyroBias[1]);
     LOADCAL_LOG("gyroBias[2] = %f\n", gyroBias[2]);
 
-    inv_obj.temp_data[bin][inv_obj.temp_ptrs[bin]] = newTemp;
-    LOADCAL_LOG("temp_data[%d][%d] = %f",
-                bin, inv_obj.temp_ptrs[bin],
-                inv_obj.temp_data[bin][inv_obj.temp_ptrs[bin]]);
-    inv_obj.x_gyro_temp_data[bin][inv_obj.temp_ptrs[bin]] = gyroBias[0];
-    LOADCAL_LOG("x_gyro_temp_data[%d][%d] = %f\n",
-                bin, inv_obj.temp_ptrs[bin],
-                inv_obj.x_gyro_temp_data[bin][inv_obj.temp_ptrs[bin]]);
-    inv_obj.y_gyro_temp_data[bin][inv_obj.temp_ptrs[bin]] = gyroBias[1];
-    LOADCAL_LOG("y_gyro_temp_data[%d][%d] = %f\n",
-                bin, inv_obj.temp_ptrs[bin],
-                inv_obj.y_gyro_temp_data[bin][inv_obj.temp_ptrs[bin]]);
-    inv_obj.z_gyro_temp_data[bin][inv_obj.temp_ptrs[bin]] = gyroBias[2];
-    LOADCAL_LOG("z_gyro_temp_data[%d][%d] = %f\n",
-                bin, inv_obj.temp_ptrs[bin],
-                inv_obj.z_gyro_temp_data[bin][inv_obj.temp_ptrs[bin]]);
+    inv_obj.gyro_tc->temp_data[bin][inv_obj.gyro_tc->temp_ptrs[bin]] = newTemp;
+    LOADCAL_LOG("gyro_tc->temp_data[%d][%d] = %f",
+                bin, inv_obj.gyro_tc->temp_ptrs[bin],
+                inv_obj.gyro_tc->temp_data[bin][inv_obj.gyro_tc->temp_ptrs[bin]]);
+    inv_obj.gyro_tc->x_gyro_temp_data[bin][inv_obj.gyro_tc->temp_ptrs[bin]] = gyroBias[0];
+    LOADCAL_LOG("gyro_tc->x_gyro_temp_data[%d][%d] = %f\n",
+                bin, inv_obj.gyro_tc->temp_ptrs[bin],
+                inv_obj.gyro_tc->x_gyro_temp_data[bin][inv_obj.gyro_tc->temp_ptrs[bin]]);
+    inv_obj.gyro_tc->y_gyro_temp_data[bin][inv_obj.gyro_tc->temp_ptrs[bin]] = gyroBias[1];
+    LOADCAL_LOG("gyro_tc->y_gyro_temp_data[%d][%d] = %f\n",
+                bin, inv_obj.gyro_tc->temp_ptrs[bin],
+                inv_obj.gyro_tc->y_gyro_temp_data[bin][inv_obj.gyro_tc->temp_ptrs[bin]]);
+    inv_obj.gyro_tc->z_gyro_temp_data[bin][inv_obj.gyro_tc->temp_ptrs[bin]] = gyroBias[2];
+    LOADCAL_LOG("gyro_tc->z_gyro_temp_data[%d][%d] = %f\n",
+                bin, inv_obj.gyro_tc->temp_ptrs[bin],
+                inv_obj.gyro_tc->z_gyro_temp_data[bin][inv_obj.gyro_tc->temp_ptrs[bin]]);
 
-    inv_obj.temp_ptrs[bin] = (inv_obj.temp_ptrs[bin] + 1) % PTS_PER_BIN;
-    LOADCAL_LOG("temp_ptrs[%d] = %d\n", bin, inv_obj.temp_ptrs[bin]);
+    inv_obj.gyro_tc->temp_ptrs[bin] = (inv_obj.gyro_tc->temp_ptrs[bin] + 1) % PTS_PER_BIN;
+    LOADCAL_LOG("gyro_tc->temp_ptrs[%d] = %d\n", bin, inv_obj.gyro_tc->temp_ptrs[bin]);
 
-    if (inv_obj.temp_ptrs[bin] == 0)
-        inv_obj.temp_valid_data[bin] = TRUE;
-    LOADCAL_LOG("temp_valid_data[%d] = %ld\n",
-                bin, inv_obj.temp_valid_data[bin]);
+    if (inv_obj.gyro_tc->temp_ptrs[bin] == 0)
+        inv_obj.gyro_tc->temp_valid_data[bin] = true;
+    LOADCAL_LOG("gyro_tc->temp_valid_data[%d] = %ld\n",
+                bin, inv_obj.gyro_tc->temp_valid_data[bin]);
 
     /* load accel biases and apply immediately */
     accelBias[0] = ((long)calData[14]) * 256 + ((long)calData[15]);
     if (accelBias[0] > 32767)
         accelBias[0] -= 65536L;
-    accelBias[0] = (long)((long long)accelBias[0] * 65536L *
-                          inv_obj.accel_sens / 1073741824L);
+    accelBias[0] = inv_q30_mult(accelBias[0]<<16, inv_obj.accel->sens);
     LOADCAL_LOG("accelBias[0] = %ld\n", accelBias[0]);
     accelBias[1] = ((long)calData[16]) * 256 + ((long)calData[17]);
     if (accelBias[1] > 32767)
         accelBias[1] -= 65536L;
-    accelBias[1] = (long)((long long)accelBias[1] * 65536L *
-                          inv_obj.accel_sens / 1073741824L);
+    accelBias[1] = inv_q30_mult(accelBias[1]<<16, inv_obj.accel->sens);
     LOADCAL_LOG("accelBias[1] = %ld\n", accelBias[1]);
     accelBias[2] = ((long)calData[18]) * 256 + ((int)calData[19]);
     if (accelBias[2] > 32767)
         accelBias[2] -= 65536L;
-    accelBias[2] = (long)((long long)accelBias[2] * 65536L *
-                          inv_obj.accel_sens / 1073741824L);
+    accelBias[2] = inv_q30_mult(accelBias[2]<<16, inv_obj.accel->sens);
     LOADCAL_LOG("accelBias[2] = %ld\n", accelBias[2]);
     if (inv_set_array(INV_ACCEL_BIAS, accelBias)) {
         LOG_RESULT_LOCATION(inv_set_array(INV_ACCEL_BIAS, accelBias));
         return inv_set_array(INV_ACCEL_BIAS, accelBias);
     }
 
-    inv_obj.got_no_motion_bias = TRUE;
-    LOADCAL_LOG("got_no_motion_bias = 1\n");
-    inv_obj.cal_loaded_flag = TRUE;
-    LOADCAL_LOG("cal_loaded_flag = 1\n");
+    inv_obj.lite_fusion->got_no_motion_bias = true;
+    LOADCAL_LOG("lite_fusion->got_no_motion_bias = 1\n");
+    inv_obj.sys->cal_loaded_flag = true;
+    LOADCAL_LOG("sys->cal_loaded_flag = 1\n");
 
     LOADCAL_LOG("Exiting inv_load_cal_V1\n");
     return INV_SUCCESS;
@@ -393,7 +378,7 @@ inv_error_t inv_load_cal_V2(unsigned char *calData, unsigned short len)
     int ptr = INV_CAL_HDR_LEN;
 
     int i, j;
-    long long tmp;
+    long tmp;
 
     LOADCAL_LOG("Entering inv_load_cal_V2\n");
 
@@ -404,93 +389,59 @@ inv_error_t inv_load_cal_V2(unsigned char *calData, unsigned short len)
     }
 
     for (i = 0; i < BINS; i++) {
-        inv_obj.temp_ptrs[i] = 0;
-        inv_obj.temp_ptrs[i] += 16777216L * ((long)calData[ptr++]);
-        inv_obj.temp_ptrs[i] += 65536L * ((long)calData[ptr++]);
-        inv_obj.temp_ptrs[i] += 256 * ((int)calData[ptr++]);
-        inv_obj.temp_ptrs[i] += (int)calData[ptr++];
-        LOADCAL_LOG("temp_ptrs[%d] = %d\n", i, inv_obj.temp_ptrs[i]);
+        inv_obj.gyro_tc->temp_ptrs[i] = inv_big8_to_int32(&calData[ptr]);
+        ptr += 4;
+        LOADCAL_LOG("temp_ptrs[%d] = %d\n", i, inv_obj.gyro_tc->temp_ptrs[i]);
     }
     for (i = 0; i < BINS; i++) {
-        inv_obj.temp_valid_data[i] = 0;
-        inv_obj.temp_valid_data[i] += 16777216L * ((long)calData[ptr++]);
-        inv_obj.temp_valid_data[i] += 65536L * ((long)calData[ptr++]);
-        inv_obj.temp_valid_data[i] += 256 * ((int)calData[ptr++]);
-        inv_obj.temp_valid_data[i] += (int)calData[ptr++];
+        inv_obj.gyro_tc->temp_valid_data[i] = inv_big8_to_int32(&calData[ptr]);
+        ptr += 4;
         LOADCAL_LOG("temp_valid_data[%d] = %ld\n",
-                    i, inv_obj.temp_valid_data[i]);
+                    i, inv_obj.gyro_tc->temp_valid_data[i]);
     }
 
     for (i = 0; i < BINS; i++) {
         for (j = 0; j < PTS_PER_BIN; j++) {
-            tmp = 0;
-            tmp += 16777216LL * (long long)calData[ptr++];
-            tmp += 65536LL * (long long)calData[ptr++];
-            tmp += 256LL * (long long)calData[ptr++];
-            tmp += (long long)calData[ptr++];
-            if (tmp > 2147483648LL) {
-                tmp -= 4294967296LL;
-            }
-            inv_obj.temp_data[i][j] = ((float)tmp) / 65536.0f;
-            LOADCAL_LOG("temp_data[%d][%d] = %f\n",
-                        i, j, inv_obj.temp_data[i][j]);
+            tmp = inv_big8_to_int32(&calData[ptr]);
+            ptr += 4;
+            inv_obj.gyro_tc->temp_data[i][j] = ((float)tmp) / 65536.0f;
+            LOADCAL_LOG("gyro_tc->temp_data[%d][%d] = %f\n",
+                        i, j, inv_obj.gyro_tc->temp_data[i][j]);
         }
 
     }
     for (i = 0; i < BINS; i++) {
         for (j = 0; j < PTS_PER_BIN; j++) {
-            tmp = 0;
-            tmp += 16777216LL * (long long)calData[ptr++];
-            tmp += 65536LL * (long long)calData[ptr++];
-            tmp += 256LL * (long long)calData[ptr++];
-            tmp += (long long)calData[ptr++];
-            if (tmp > 2147483648LL) {
-                tmp -= 4294967296LL;
-            }
-            inv_obj.x_gyro_temp_data[i][j] = ((float)tmp) / 65536.0f;
-            LOADCAL_LOG("x_gyro_temp_data[%d][%d] = %f\n",
-                        i, j, inv_obj.x_gyro_temp_data[i][j]);
+            tmp = inv_big8_to_int32(&calData[ptr]);
+            ptr += 4;
+            inv_obj.gyro_tc->x_gyro_temp_data[i][j] = ((float)tmp) / 65536.0f;
+            LOADCAL_LOG("gyro_tc->x_gyro_temp_data[%d][%d] = %f\n",
+                        i, j, inv_obj.gyro_tc->x_gyro_temp_data[i][j]);
         }
     }
     for (i = 0; i < BINS; i++) {
         for (j = 0; j < PTS_PER_BIN; j++) {
-            tmp = 0;
-            tmp += 16777216LL * (long long)calData[ptr++];
-            tmp += 65536LL * (long long)calData[ptr++];
-            tmp += 256LL * (long long)calData[ptr++];
-            tmp += (long long)calData[ptr++];
-            if (tmp > 2147483648LL) {
-                tmp -= 4294967296LL;
-            }
-            inv_obj.y_gyro_temp_data[i][j] = ((float)tmp) / 65536.0f;
-            LOADCAL_LOG("y_gyro_temp_data[%d][%d] = %f\n",
-                        i, j, inv_obj.y_gyro_temp_data[i][j]);
+            tmp = inv_big8_to_int32(&calData[ptr]);
+            ptr += 4;
+            inv_obj.gyro_tc->y_gyro_temp_data[i][j] = ((float)tmp) / 65536.0f;
+            LOADCAL_LOG("gyro_tc->y_gyro_temp_data[%d][%d] = %f\n",
+                        i, j, inv_obj.gyro_tc->y_gyro_temp_data[i][j]);
         }
     }
     for (i = 0; i < BINS; i++) {
         for (j = 0; j < PTS_PER_BIN; j++) {
-            tmp = 0;
-            tmp += 16777216LL * (long long)calData[ptr++];
-            tmp += 65536LL * (long long)calData[ptr++];
-            tmp += 256LL * (long long)calData[ptr++];
-            tmp += (long long)calData[ptr++];
-            if (tmp > 2147483648LL) {
-                tmp -= 4294967296LL;
-            }
-            inv_obj.z_gyro_temp_data[i][j] = ((float)tmp) / 65536.0f;
-            LOADCAL_LOG("z_gyro_temp_data[%d][%d] = %f\n",
-                        i, j, inv_obj.z_gyro_temp_data[i][j]);
+            tmp = inv_big8_to_int32(&calData[ptr]);
+            ptr += 4;
+            inv_obj.gyro_tc->z_gyro_temp_data[i][j] = ((float)tmp) / 65536.0f;
+            LOADCAL_LOG("gyro_tc->z_gyro_temp_data[%d][%d] = %f\n",
+                        i, j, inv_obj.gyro_tc->z_gyro_temp_data[i][j]);
         }
     }
 
     /* read the accel biases */
     for (i = 0; i < 3; i++) {
-        uint32_t t = 0;
-        t += 16777216UL * ((uint32_t) calData[ptr++]);
-        t += 65536UL * ((uint32_t) calData[ptr++]);
-        t += 256u * ((uint32_t) calData[ptr++]);
-        t += (uint32_t) calData[ptr++];
-        accel_bias[i] = (int32_t) t;
+        accel_bias[i] = inv_big8_to_int32(&calData[ptr]);
+        ptr += 4;
         LOADCAL_LOG("accel_bias[%d] = %ld\n", i, accel_bias[i]);
     }
 
@@ -499,10 +450,10 @@ inv_error_t inv_load_cal_V2(unsigned char *calData, unsigned short len)
         return inv_set_array(INV_ACCEL_BIAS, accel_bias);
     }
 
-    inv_obj.got_no_motion_bias = TRUE;
-    LOADCAL_LOG("got_no_motion_bias = 1\n");
-    inv_obj.cal_loaded_flag = TRUE;
-    LOADCAL_LOG("cal_loaded_flag = 1\n");
+    inv_obj.lite_fusion->got_no_motion_bias = true;
+    LOADCAL_LOG("lite_fusion->got_no_motion_bias = 1\n");
+    inv_obj.sys->cal_loaded_flag = true;
+    LOADCAL_LOG("sys->cal_loaded_flag = 1\n");
 
     LOADCAL_LOG("Exiting inv_load_cal_V2\n");
     return INV_SUCCESS;
@@ -542,10 +493,6 @@ inv_error_t inv_load_cal_V2(unsigned char *calData, unsigned short len)
 inv_error_t inv_load_cal_V3(unsigned char *calData, unsigned short len)
 {
     INVENSENSE_FUNC_START;
-    union doubleToLongLong {
-        double db;
-        unsigned long long ll;
-    } dToLL;
 
     const short expLen = 2429;
     long bias[3];
@@ -562,93 +509,59 @@ inv_error_t inv_load_cal_V3(unsigned char *calData, unsigned short len)
     }
 
     for (i = 0; i < BINS; i++) {
-        inv_obj.temp_ptrs[i] = 0;
-        inv_obj.temp_ptrs[i] += 16777216L * ((long)calData[ptr++]);
-        inv_obj.temp_ptrs[i] += 65536L * ((long)calData[ptr++]);
-        inv_obj.temp_ptrs[i] += 256 * ((int)calData[ptr++]);
-        inv_obj.temp_ptrs[i] += (int)calData[ptr++];
-        LOADCAL_LOG("temp_ptrs[%d] = %d\n", i, inv_obj.temp_ptrs[i]);
+        inv_obj.gyro_tc->temp_ptrs[i] = inv_big8_to_int32(&calData[ptr]);
+        ptr += 4;
+        LOADCAL_LOG("temp_ptrs[%d] = %d\n", i, inv_obj.gyro_tc->temp_ptrs[i]);
     }
     for (i = 0; i < BINS; i++) {
-        inv_obj.temp_valid_data[i] = 0;
-        inv_obj.temp_valid_data[i] += 16777216L * ((long)calData[ptr++]);
-        inv_obj.temp_valid_data[i] += 65536L * ((long)calData[ptr++]);
-        inv_obj.temp_valid_data[i] += 256 * ((int)calData[ptr++]);
-        inv_obj.temp_valid_data[i] += (int)calData[ptr++];
+        inv_obj.gyro_tc->temp_valid_data[i] = inv_big8_to_int32(&calData[ptr]);
+        ptr += 4;
         LOADCAL_LOG("temp_valid_data[%d] = %ld\n",
-                    i, inv_obj.temp_valid_data[i]);
+                    i, inv_obj.gyro_tc->temp_valid_data[i]);
     }
 
     for (i = 0; i < BINS; i++) {
         for (j = 0; j < PTS_PER_BIN; j++) {
-            tmp = 0;
-            tmp += 16777216LL * (long long)calData[ptr++];
-            tmp += 65536LL * (long long)calData[ptr++];
-            tmp += 256LL * (long long)calData[ptr++];
-            tmp += (long long)calData[ptr++];
-            if (tmp > 2147483648LL) {
-                tmp -= 4294967296LL;
-            }
-            inv_obj.temp_data[i][j] = ((float)tmp) / 65536.0f;
-            LOADCAL_LOG("temp_data[%d][%d] = %f\n",
-                        i, j, inv_obj.temp_data[i][j]);
+            tmp = inv_big8_to_int32(&calData[ptr]);
+            ptr += 4;
+            inv_obj.gyro_tc->temp_data[i][j] = ((float)tmp) / 65536.0f;
+            LOADCAL_LOG("gyro_tc->temp_data[%d][%d] = %f\n",
+                        i, j, inv_obj.gyro_tc->temp_data[i][j]);
         }
     }
 
     for (i = 0; i < BINS; i++) {
         for (j = 0; j < PTS_PER_BIN; j++) {
-            tmp = 0;
-            tmp += 16777216LL * (long long)calData[ptr++];
-            tmp += 65536LL * (long long)calData[ptr++];
-            tmp += 256LL * (long long)calData[ptr++];
-            tmp += (long long)calData[ptr++];
-            if (tmp > 2147483648LL) {
-                tmp -= 4294967296LL;
-            }
-            inv_obj.x_gyro_temp_data[i][j] = ((float)tmp) / 65536.0f;
-            LOADCAL_LOG("x_gyro_temp_data[%d][%d] = %f\n",
-                        i, j, inv_obj.x_gyro_temp_data[i][j]);
+            tmp = inv_big8_to_int32(&calData[ptr]);
+            ptr += 4;
+            inv_obj.gyro_tc->x_gyro_temp_data[i][j] = ((float)tmp) / 65536.0f;
+            LOADCAL_LOG("gyro_tc->x_gyro_temp_data[%d][%d] = %f\n",
+                        i, j, inv_obj.gyro_tc->x_gyro_temp_data[i][j]);
         }
     }
     for (i = 0; i < BINS; i++) {
         for (j = 0; j < PTS_PER_BIN; j++) {
-            tmp = 0;
-            tmp += 16777216LL * (long long)calData[ptr++];
-            tmp += 65536LL * (long long)calData[ptr++];
-            tmp += 256LL * (long long)calData[ptr++];
-            tmp += (long long)calData[ptr++];
-            if (tmp > 2147483648LL) {
-                tmp -= 4294967296LL;
-            }
-            inv_obj.y_gyro_temp_data[i][j] = ((float)tmp) / 65536.0f;
-            LOADCAL_LOG("y_gyro_temp_data[%d][%d] = %f\n",
-                        i, j, inv_obj.y_gyro_temp_data[i][j]);
+            tmp = inv_big8_to_int32(&calData[ptr]);
+            ptr += 4;
+            inv_obj.gyro_tc->y_gyro_temp_data[i][j] = ((float)tmp) / 65536.0f;
+            LOADCAL_LOG("gyro_tc->y_gyro_temp_data[%d][%d] = %f\n",
+                        i, j, inv_obj.gyro_tc->y_gyro_temp_data[i][j]);
         }
     }
     for (i = 0; i < BINS; i++) {
         for (j = 0; j < PTS_PER_BIN; j++) {
-            tmp = 0;
-            tmp += 16777216LL * (long long)calData[ptr++];
-            tmp += 65536LL * (long long)calData[ptr++];
-            tmp += 256LL * (long long)calData[ptr++];
-            tmp += (long long)calData[ptr++];
-            if (tmp > 2147483648LL) {
-                tmp -= 4294967296LL;
-            }
-            inv_obj.z_gyro_temp_data[i][j] = ((float)tmp) / 65536.0f;
-            LOADCAL_LOG("z_gyro_temp_data[%d][%d] = %f\n",
-                        i, j, inv_obj.z_gyro_temp_data[i][j]);
+            tmp = inv_big8_to_int32(&calData[ptr]);
+            ptr += 4;
+            inv_obj.gyro_tc->z_gyro_temp_data[i][j] = ((float)tmp) / 65536.0f;
+            LOADCAL_LOG("gyro_tc->z_gyro_temp_data[%d][%d] = %f\n",
+                        i, j, inv_obj.gyro_tc->z_gyro_temp_data[i][j]);
         }
     }
 
     /* read the accel biases */
     for (i = 0; i < 3; i++) {
-        uint32_t t = 0;
-        t += 16777216UL * ((uint32_t) calData[ptr++]);
-        t += 65536UL * ((uint32_t) calData[ptr++]);
-        t += 256u * ((uint32_t) calData[ptr++]);
-        t += (uint32_t) calData[ptr++];
-        bias[i] = (int32_t) t;
+        bias[i] = inv_big8_to_int32(&calData[ptr]);
+        ptr += 4;
         LOADCAL_LOG("accel_bias[%d] = %ld\n", i, bias[i]);
     }
     if (inv_set_array(INV_ACCEL_BIAS, bias)) {
@@ -657,82 +570,37 @@ inv_error_t inv_load_cal_V3(unsigned char *calData, unsigned short len)
     }
 
     /* read the compass biases */
-    inv_obj.got_compass_bias = (int)calData[ptr++];
-    inv_obj.got_init_compass_bias = (int)calData[ptr++];
-    inv_obj.compass_state = (int)calData[ptr++];
+    inv_obj.adv_fusion->got_compass_bias = (int)calData[ptr++];
+    inv_obj.adv_fusion->got_init_compass_bias = (int)calData[ptr++];
+    inv_obj.adv_fusion->compass_state = (int)calData[ptr++];
 
     for (i = 0; i < 3; i++) {
-        uint32_t t = 0;
-        t += 16777216UL * ((uint32_t) calData[ptr++]);
-        t += 65536UL * ((uint32_t) calData[ptr++]);
-        t += 256u * ((uint32_t) calData[ptr++]);
-        t += (uint32_t) calData[ptr++];
-        inv_obj.compass_bias_error[i] = (int32_t) t;
+        inv_obj.adv_fusion->compass_bias_error[i] = inv_big8_to_int32(&calData[ptr]);
+        ptr += 4;
         LOADCAL_LOG("compass_bias_error[%d] = %ld\n", i,
-                    inv_obj.compass_bias_error[i]);
+                    inv_obj.adv_fusion->compass_bias_error[i]);
     }
+
+    ptr += 3*4;
+
     for (i = 0; i < 3; i++) {
-        uint32_t t = 0;
-        t += 16777216UL * ((uint32_t) calData[ptr++]);
-        t += 65536UL * ((uint32_t) calData[ptr++]);
-        t += 256u * ((uint32_t) calData[ptr++]);
-        t += (uint32_t) calData[ptr++];
-        inv_obj.init_compass_bias[i] = (int32_t) t;
-        LOADCAL_LOG("init_compass_bias[%d] = %ld\n", i,
-                    inv_obj.init_compass_bias[i]);
-    }
-    for (i = 0; i < 3; i++) {
-        uint32_t t = 0;
-        t += 16777216UL * ((uint32_t) calData[ptr++]);
-        t += 65536UL * ((uint32_t) calData[ptr++]);
-        t += 256u * ((uint32_t) calData[ptr++]);
-        t += (uint32_t) calData[ptr++];
-        inv_obj.compass_bias[i] = (int32_t) t;
-        LOADCAL_LOG("compass_bias[%d] = %ld\n", i, inv_obj.compass_bias[i]);
+        inv_obj.mag->bias[i] = inv_big8_to_int32(&calData[ptr]);
+        ptr += 4;
+        LOADCAL_LOG("compass_bias[%d] = %ld\n", i, inv_obj.mag->bias[i]);
     }
     for (i = 0; i < 18; i++) {
-        uint32_t t = 0;
-        t += 16777216UL * ((uint32_t) calData[ptr++]);
-        t += 65536UL * ((uint32_t) calData[ptr++]);
-        t += 256u * ((uint32_t) calData[ptr++]);
-        t += (uint32_t) calData[ptr++];
-        inv_obj.compass_peaks[i] = (int32_t) t;
-        LOADCAL_LOG("compass_peaks[%d] = %d\n", i, inv_obj.compass_peaks[i]);
-    }
-    for (i = 0; i < 3; i++) {
-        dToLL.ll = 0;
-        dToLL.ll += 72057594037927936ULL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 281474976710656ULL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 1099511627776ULL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 4294967296LL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 16777216ULL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 65536ULL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 256LL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += (unsigned long long)calData[ptr++];
-
-        inv_obj.compass_bias_v[i] = dToLL.db;
-        LOADCAL_LOG("compass_bias_v[%d] = %lf\n", i, inv_obj.compass_bias_v[i]);
-    }
-    for (i = 0; i < 9; i++) {
-        dToLL.ll = 0;
-        dToLL.ll += 72057594037927936ULL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 281474976710656ULL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 1099511627776ULL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 4294967296LL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 16777216ULL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 65536ULL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 256LL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += (unsigned long long)calData[ptr++];
-
-        inv_obj.compass_bias_ptr[i] = dToLL.db;
-        LOADCAL_LOG("compass_bias_ptr[%d] = %lf\n", i,
-                    inv_obj.compass_bias_ptr[i]);
+        inv_obj.adv_fusion->compass_peaks[i] = inv_big8_to_int32(&calData[ptr]);
+        ptr += 4;
+        LOADCAL_LOG("compass_peaks[%d] = %d\n", i, inv_obj.adv_fusion->compass_peaks[i]);
     }
 
-    inv_obj.got_no_motion_bias = TRUE;
-    LOADCAL_LOG("got_no_motion_bias = 1\n");
-    inv_obj.cal_loaded_flag = TRUE;
-    LOADCAL_LOG("cal_loaded_flag = 1\n");
+    ptr += 3*8;
+    ptr += 9*8;
+
+    inv_obj.lite_fusion->got_no_motion_bias = true;
+    LOADCAL_LOG("lite_fusion->got_no_motion_bias = 1\n");
+    inv_obj.sys->cal_loaded_flag = true;
+    LOADCAL_LOG("sys->cal_loaded_flag = 1\n");
 
     LOADCAL_LOG("Exiting inv_load_cal_V3\n");
     return INV_SUCCESS;
@@ -777,12 +645,11 @@ inv_error_t inv_load_cal_V4(unsigned char *calData, unsigned short len)
         unsigned long long ll;
     } dToLL;
 
-    const unsigned int expLen = 2782;
+    const unsigned int expLen = 2777;
     long bias[3];
     int ptr = INV_CAL_HDR_LEN;
     int i, j;
     long long tmp;
-    inv_error_t result;
 
     LOADCAL_LOG("Entering inv_load_cal_V4\n");
 
@@ -793,37 +660,21 @@ inv_error_t inv_load_cal_V4(unsigned char *calData, unsigned short len)
     }
 
     for (i = 0; i < BINS; i++) {
-        inv_obj.temp_ptrs[i] = 0;
-        inv_obj.temp_ptrs[i] += 16777216L * ((long)calData[ptr++]);
-        inv_obj.temp_ptrs[i] += 65536L * ((long)calData[ptr++]);
-        inv_obj.temp_ptrs[i] += 256 * ((int)calData[ptr++]);
-        inv_obj.temp_ptrs[i] += (int)calData[ptr++];
-        LOADCAL_LOG("temp_ptrs[%d] = %d\n", i, inv_obj.temp_ptrs[i]);
+        inv_obj.gyro_tc->temp_ptrs[i] = 0;
+        inv_obj.gyro_tc->temp_ptrs[i] += 16777216L * ((long)calData[ptr++]);
+        inv_obj.gyro_tc->temp_ptrs[i] += 65536L * ((long)calData[ptr++]);
+        inv_obj.gyro_tc->temp_ptrs[i] += 256 * ((int)calData[ptr++]);
+        inv_obj.gyro_tc->temp_ptrs[i] += (int)calData[ptr++];
+        LOADCAL_LOG("gyro_tc->temp_ptrs[%d] = %d\n", i, inv_obj.gyro_tc->temp_ptrs[i]);
     }
     for (i = 0; i < BINS; i++) {
-        inv_obj.temp_valid_data[i] = 0;
-        inv_obj.temp_valid_data[i] += 16777216L * ((long)calData[ptr++]);
-        inv_obj.temp_valid_data[i] += 65536L * ((long)calData[ptr++]);
-        inv_obj.temp_valid_data[i] += 256 * ((int)calData[ptr++]);
-        inv_obj.temp_valid_data[i] += (int)calData[ptr++];
-        LOADCAL_LOG("temp_valid_data[%d] = %ld\n",
-                    i, inv_obj.temp_valid_data[i]);
-    }
-
-    for (i = 0; i < BINS; i++) {
-        for (j = 0; j < PTS_PER_BIN; j++) {
-            tmp = 0;
-            tmp += 16777216LL * (long long)calData[ptr++];
-            tmp += 65536LL * (long long)calData[ptr++];
-            tmp += 256LL * (long long)calData[ptr++];
-            tmp += (long long)calData[ptr++];
-            if (tmp > 2147483648LL) {
-                tmp -= 4294967296LL;
-            }
-            inv_obj.temp_data[i][j] = ((float)tmp) / 65536.0f;
-            LOADCAL_LOG("temp_data[%d][%d] = %f\n",
-                        i, j, inv_obj.temp_data[i][j]);
-        }
+        inv_obj.gyro_tc->temp_valid_data[i] = 0;
+        inv_obj.gyro_tc->temp_valid_data[i] += 16777216L * ((long)calData[ptr++]);
+        inv_obj.gyro_tc->temp_valid_data[i] += 65536L * ((long)calData[ptr++]);
+        inv_obj.gyro_tc->temp_valid_data[i] += 256 * ((int)calData[ptr++]);
+        inv_obj.gyro_tc->temp_valid_data[i] += (int)calData[ptr++];
+        LOADCAL_LOG("gyro_tc->temp_valid_data[%d] = %ld\n",
+                    i, inv_obj.gyro_tc->temp_valid_data[i]);
     }
 
     for (i = 0; i < BINS; i++) {
@@ -836,9 +687,25 @@ inv_error_t inv_load_cal_V4(unsigned char *calData, unsigned short len)
             if (tmp > 2147483648LL) {
                 tmp -= 4294967296LL;
             }
-            inv_obj.x_gyro_temp_data[i][j] = ((float)tmp) / 65536.0f;
-            LOADCAL_LOG("x_gyro_temp_data[%d][%d] = %f\n",
-                        i, j, inv_obj.x_gyro_temp_data[i][j]);
+            inv_obj.gyro_tc->temp_data[i][j] = ((float)tmp) / 65536.0f;
+            LOADCAL_LOG("gyro_tc->temp_data[%d][%d] = %f\n",
+                        i, j, inv_obj.gyro_tc->temp_data[i][j]);
+        }
+    }
+
+    for (i = 0; i < BINS; i++) {
+        for (j = 0; j < PTS_PER_BIN; j++) {
+            tmp = 0;
+            tmp += 16777216LL * (long long)calData[ptr++];
+            tmp += 65536LL * (long long)calData[ptr++];
+            tmp += 256LL * (long long)calData[ptr++];
+            tmp += (long long)calData[ptr++];
+            if (tmp > 2147483648LL) {
+                tmp -= 4294967296LL;
+            }
+            inv_obj.gyro_tc->x_gyro_temp_data[i][j] = ((float)tmp) / 65536.0f;
+            LOADCAL_LOG("gyro_tc->x_gyro_temp_data[%d][%d] = %f\n",
+                        i, j, inv_obj.gyro_tc->x_gyro_temp_data[i][j]);
         }
     }
     for (i = 0; i < BINS; i++) {
@@ -851,9 +718,9 @@ inv_error_t inv_load_cal_V4(unsigned char *calData, unsigned short len)
             if (tmp > 2147483648LL) {
                 tmp -= 4294967296LL;
             }
-            inv_obj.y_gyro_temp_data[i][j] = ((float)tmp) / 65536.0f;
-            LOADCAL_LOG("y_gyro_temp_data[%d][%d] = %f\n",
-                        i, j, inv_obj.y_gyro_temp_data[i][j]);
+            inv_obj.gyro_tc->y_gyro_temp_data[i][j] = ((float)tmp) / 65536.0f;
+            LOADCAL_LOG("gyro_tc->y_gyro_temp_data[%d][%d] = %f\n",
+                        i, j, inv_obj.gyro_tc->y_gyro_temp_data[i][j]);
         }
     }
     for (i = 0; i < BINS; i++) {
@@ -866,9 +733,9 @@ inv_error_t inv_load_cal_V4(unsigned char *calData, unsigned short len)
             if (tmp > 2147483648LL) {
                 tmp -= 4294967296LL;
             }
-            inv_obj.z_gyro_temp_data[i][j] = ((float)tmp) / 65536.0f;
-            LOADCAL_LOG("z_gyro_temp_data[%d][%d] = %f\n",
-                        i, j, inv_obj.z_gyro_temp_data[i][j]);
+            inv_obj.gyro_tc->z_gyro_temp_data[i][j] = ((float)tmp) / 65536.0f;
+            LOADCAL_LOG("gyro_tc->z_gyro_temp_data[%d][%d] = %f\n",
+                        i, j, inv_obj.gyro_tc->z_gyro_temp_data[i][j]);
         }
     }
 
@@ -888,14 +755,12 @@ inv_error_t inv_load_cal_V4(unsigned char *calData, unsigned short len)
     }
 
     /* read the compass biases */
-    inv_reset_compass_calibration();
-
-    inv_obj.got_compass_bias = (int)calData[ptr++];
-    LOADCAL_LOG("got_compass_bias = %ld\n", inv_obj.got_compass_bias);
-    inv_obj.got_init_compass_bias = (int)calData[ptr++];
-    LOADCAL_LOG("got_init_compass_bias = %d\n", inv_obj.got_init_compass_bias);
-    inv_obj.compass_state = (int)calData[ptr++];
-    LOADCAL_LOG("compass_state = %ld\n", inv_obj.compass_state);
+    inv_obj.adv_fusion->got_compass_bias = (int)calData[ptr++];
+    LOADCAL_LOG("adv_fusion->got_compass_bias = %d\n", inv_obj.adv_fusion->got_compass_bias);
+    inv_obj.adv_fusion->got_init_compass_bias = (int)calData[ptr++];
+    LOADCAL_LOG("adv_fusion->got_init_compass_bias = %d\n", inv_obj.adv_fusion->got_init_compass_bias);
+    inv_obj.adv_fusion->compass_state = (int)calData[ptr++];
+    LOADCAL_LOG("adv_fusion->compass_state = %d\n", inv_obj.adv_fusion->compass_state);
 
     for (i = 0; i < 3; i++) {
         uint32_t t = 0;
@@ -903,73 +768,51 @@ inv_error_t inv_load_cal_V4(unsigned char *calData, unsigned short len)
         t += 65536UL * ((uint32_t) calData[ptr++]);
         t += 256u * ((uint32_t) calData[ptr++]);
         t += (uint32_t) calData[ptr++];
-        inv_obj.compass_bias_error[i] = (int32_t) t;
+        inv_obj.adv_fusion->compass_bias_error[i] = (int32_t) t;
         LOADCAL_LOG("compass_bias_error[%d] = %ld\n", i,
-                    inv_obj.compass_bias_error[i]);
+                    inv_obj.adv_fusion->compass_bias_error[i]);
     }
+
+    ptr += 3*4;
+
     for (i = 0; i < 3; i++) {
         uint32_t t = 0;
         t += 16777216UL * ((uint32_t) calData[ptr++]);
         t += 65536UL * ((uint32_t) calData[ptr++]);
         t += 256u * ((uint32_t) calData[ptr++]);
         t += (uint32_t) calData[ptr++];
-        inv_obj.init_compass_bias[i] = (int32_t) t;
-        LOADCAL_LOG("init_compass_bias[%d] = %ld\n", i,
-                    inv_obj.init_compass_bias[i]);
+        inv_obj.mag->bias[i] = (int32_t) t;
+        LOADCAL_LOG("compass_bias[%d] = %ld\n", i, inv_obj.mag->bias[i]);
     }
-    for (i = 0; i < 3; i++) {
-        uint32_t t = 0;
-        t += 16777216UL * ((uint32_t) calData[ptr++]);
-        t += 65536UL * ((uint32_t) calData[ptr++]);
-        t += 256u * ((uint32_t) calData[ptr++]);
-        t += (uint32_t) calData[ptr++];
-        inv_obj.compass_bias[i] = (int32_t) t;
-        LOADCAL_LOG("compass_bias[%d] = %ld\n", i, inv_obj.compass_bias[i]);
+    {
+        long bias[3];
+        bias[0] = (long)(inv_obj.mag->bias[0] * (1LL<<30) / inv_obj.mag->sens);
+        bias[1] = (long)(inv_obj.mag->bias[1] * (1LL<<30) / inv_obj.mag->sens);
+        bias[2] = (long)(inv_obj.mag->bias[2] * (1LL<<30) / inv_obj.mag->sens);
+        inv_set_compass_bias(NULL, bias);
     }
+
     for (i = 0; i < 18; i++) {
         uint32_t t = 0;
         t += 16777216UL * ((uint32_t) calData[ptr++]);
         t += 65536UL * ((uint32_t) calData[ptr++]);
         t += 256u * ((uint32_t) calData[ptr++]);
         t += (uint32_t) calData[ptr++];
-        inv_obj.compass_peaks[i] = (int32_t) t;
-        LOADCAL_LOG("compass_peaks[%d] = %d\n", i, inv_obj.compass_peaks[i]);
+        inv_obj.adv_fusion->compass_peaks[i] = (int32_t) t;
+        LOADCAL_LOG("adv_fusion->compass_peaks[%d] = %d\n", i, inv_obj.adv_fusion->compass_peaks[i]);
     }
-    for (i = 0; i < 3; i++) {
-        dToLL.ll = 72057594037927936ULL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 281474976710656ULL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 1099511627776ULL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 4294967296LL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 16777216ULL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 65536ULL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 256LL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += (unsigned long long)calData[ptr++];
 
-        inv_obj.compass_bias_v[i] = dToLL.db;
-        LOADCAL_LOG("compass_bias_v[%d] = %lf\n", i, inv_obj.compass_bias_v[i]);
-    }
-    for (i = 0; i < 9; i++) {
-        dToLL.ll = 72057594037927936ULL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 281474976710656ULL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 1099511627776ULL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 4294967296LL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 16777216ULL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 65536ULL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += 256LL * ((unsigned long long)calData[ptr++]);
-        dToLL.ll += (unsigned long long)calData[ptr++];
+    ptr += 3*8;
+    ptr += 9*8;
 
-        inv_obj.compass_bias_ptr[i] = dToLL.db;
-        LOADCAL_LOG("compass_bias_ptr[%d] = %lf\n", i,
-                    inv_obj.compass_bias_ptr[i]);
-    }
     for (i = 0; i < 3; i++) {
         uint32_t t = 0;
         t += 16777216UL * ((uint32_t) calData[ptr++]);
         t += 65536UL * ((uint32_t) calData[ptr++]);
         t += 256u * ((uint32_t) calData[ptr++]);
         t += (uint32_t) calData[ptr++];
-        inv_obj.compass_scale[i] = (int32_t) t;
-        LOADCAL_LOG("compass_scale[%d] = %d\n", i, (int32_t) t);
+        inv_obj.adv_fusion->compass_scale[i] = (int32_t) t;
+        LOADCAL_LOG("adv_fusion->compass_scale[%d] = %d\n", i, (int32_t) t);
     }
     for (i = 0; i < 6; i++) {
         dToLL.ll = 72057594037927936ULL * ((unsigned long long)calData[ptr++]);
@@ -981,8 +824,8 @@ inv_error_t inv_load_cal_V4(unsigned char *calData, unsigned short len)
         dToLL.ll += 256LL * ((unsigned long long)calData[ptr++]);
         dToLL.ll += (unsigned long long)calData[ptr++];
 
-        inv_obj.compass_prev_xty[i] = dToLL.db;
-        LOADCAL_LOG("compass_prev_xty[%d] = %f\n", i, dToLL.db);
+        inv_obj.adv_fusion->compass_prev_xty[i] = dToLL.db;
+        LOADCAL_LOG("adv_fusion->compass_prev_xty[%d] = %f\n", i, dToLL.db);
     }
     for (i = 0; i < 36; i++) {
         dToLL.ll = 72057594037927936ULL * ((unsigned long long)calData[ptr++]);
@@ -994,33 +837,14 @@ inv_error_t inv_load_cal_V4(unsigned char *calData, unsigned short len)
         dToLL.ll += 256LL * ((unsigned long long)calData[ptr++]);
         dToLL.ll += (unsigned long long)calData[ptr++];
 
-        inv_obj.compass_prev_m[i] = dToLL.db;
-        LOADCAL_LOG("compass_prev_m[%d] = %f\n", i, dToLL.db);
+        inv_obj.adv_fusion->compass_prev_m[i] = dToLL.db;
+        LOADCAL_LOG("adv_fusion->compass_prev_m[%d] = %f\n", i, dToLL.db);
     }
 
-    /* Load the compass offset flag and values */
-    inv_obj.flags[INV_COMPASS_OFFSET_VALID] = calData[ptr++];
-    inv_obj.compass_offsets[0] = calData[ptr++];
-    inv_obj.compass_offsets[1] = calData[ptr++];
-    inv_obj.compass_offsets[2] = calData[ptr++];
-
-    inv_obj.compass_accuracy = calData[ptr++];
-    /* push the compass offset values to the device */
-    result = inv_set_compass_offset();
-
-    if (result == INV_SUCCESS) {
-        if (inv_compass_check_range() != INV_SUCCESS) {
-            MPL_LOGI("range check fail");
-            inv_reset_compass_calibration();
-            inv_obj.flags[INV_COMPASS_OFFSET_VALID] = 0;
-            inv_set_compass_offset();
-        }
-    }
-
-    inv_obj.got_no_motion_bias = TRUE;
-    LOADCAL_LOG("got_no_motion_bias = 1\n");
-    inv_obj.cal_loaded_flag = TRUE;
-    LOADCAL_LOG("cal_loaded_flag = 1\n");
+    inv_obj.lite_fusion->got_no_motion_bias = true;
+    LOADCAL_LOG("lite_fusion->got_no_motion_bias = 1\n");
+    inv_obj.sys->cal_loaded_flag = true;
+    LOADCAL_LOG("sys->cal_loaded_flag = 1\n");
 
     LOADCAL_LOG("Exiting inv_load_cal_V4\n");
     return INV_SUCCESS;
@@ -1095,26 +919,26 @@ inv_error_t inv_load_cal_V5(unsigned char *calData, unsigned short len)
     bin = FindTempBin(newTemp);
 
     /* populate the temp comp data structure */
-    inv_obj.temp_data[bin][inv_obj.temp_ptrs[bin]] = newTemp;
-    LOADCAL_LOG("temp_data[%d][%d] = %f\n",
-                bin, inv_obj.temp_ptrs[bin], newTemp);
+    inv_obj.gyro_tc->temp_data[bin][inv_obj.gyro_tc->temp_ptrs[bin]] = newTemp;
+    LOADCAL_LOG("gyro_tc->temp_data[%d][%d] = %f\n",
+                bin, inv_obj.gyro_tc->temp_ptrs[bin], newTemp);
 
-    inv_obj.x_gyro_temp_data[bin][inv_obj.temp_ptrs[bin]] = gyroBias[0];
-    LOADCAL_LOG("x_gyro_temp_data[%d][%d] = %f\n",
-                bin, inv_obj.temp_ptrs[bin], gyroBias[0]);
-    inv_obj.y_gyro_temp_data[bin][inv_obj.temp_ptrs[bin]] = gyroBias[1];
-    LOADCAL_LOG("y_gyro_temp_data[%d][%d] = %f\n",
-                bin, inv_obj.temp_ptrs[bin], gyroBias[1]);
-    inv_obj.z_gyro_temp_data[bin][inv_obj.temp_ptrs[bin]] = gyroBias[2];
-    LOADCAL_LOG("z_gyro_temp_data[%d][%d] = %f\n",
-                bin, inv_obj.temp_ptrs[bin], gyroBias[2]);
-    inv_obj.temp_ptrs[bin] = (inv_obj.temp_ptrs[bin] + 1) % PTS_PER_BIN;
-    LOADCAL_LOG("temp_ptrs[%d] = %d\n", bin, inv_obj.temp_ptrs[bin]);
+    inv_obj.gyro_tc->x_gyro_temp_data[bin][inv_obj.gyro_tc->temp_ptrs[bin]] = gyroBias[0];
+    LOADCAL_LOG("gyro_tc->x_gyro_temp_data[%d][%d] = %f\n",
+                bin, inv_obj.gyro_tc->temp_ptrs[bin], gyroBias[0]);
+    inv_obj.gyro_tc->y_gyro_temp_data[bin][inv_obj.gyro_tc->temp_ptrs[bin]] = gyroBias[1];
+    LOADCAL_LOG("gyro_tc->y_gyro_temp_data[%d][%d] = %f\n",
+                bin, inv_obj.gyro_tc->temp_ptrs[bin], gyroBias[1]);
+    inv_obj.gyro_tc->z_gyro_temp_data[bin][inv_obj.gyro_tc->temp_ptrs[bin]] = gyroBias[2];
+    LOADCAL_LOG("gyro_tc->z_gyro_temp_data[%d][%d] = %f\n",
+                bin, inv_obj.gyro_tc->temp_ptrs[bin], gyroBias[2]);
+    inv_obj.gyro_tc->temp_ptrs[bin] = (inv_obj.gyro_tc->temp_ptrs[bin] + 1) % PTS_PER_BIN;
+    LOADCAL_LOG("gyro_tc->temp_ptrs[%d] = %d\n", bin, inv_obj.gyro_tc->temp_ptrs[bin]);
 
-    if (inv_obj.temp_ptrs[bin] == 0)
-        inv_obj.temp_valid_data[bin] = TRUE;
-    LOADCAL_LOG("temp_valid_data[%d] = %ld\n",
-                bin, inv_obj.temp_valid_data[bin]);
+    if (inv_obj.gyro_tc->temp_ptrs[bin] == 0)
+        inv_obj.gyro_tc->temp_valid_data[bin] = true;
+    LOADCAL_LOG("gyro_tc->temp_valid_data[%d] = %ld\n",
+                bin, inv_obj.gyro_tc->temp_valid_data[bin]);
 
     /* load accel biases (represented in 2 ^ 16 == 1 gee)
        and apply immediately */
@@ -1132,10 +956,10 @@ inv_error_t inv_load_cal_V5(unsigned char *calData, unsigned short len)
         return inv_set_array(INV_ACCEL_BIAS, accelBias);
     }
 
-    inv_obj.got_no_motion_bias = TRUE;
-    LOADCAL_LOG("got_no_motion_bias = 1\n");
-    inv_obj.cal_loaded_flag = TRUE;
-    LOADCAL_LOG("cal_loaded_flag = 1\n");
+    inv_obj.lite_fusion->got_no_motion_bias = true;
+    LOADCAL_LOG("lite_fusion->got_no_motion_bias = 1\n");
+    inv_obj.sys->cal_loaded_flag = true;
+    LOADCAL_LOG("sys->cal_loaded_flag = 1\n");
 
     LOADCAL_LOG("Exiting inv_load_cal_V5\n");
     return INV_SUCCESS;
@@ -1205,8 +1029,9 @@ inv_error_t inv_load_cal(unsigned char *calData)
 
     cmp_chk = inv_checksum(calData + INV_CAL_HDR_LEN,
                            len - (INV_CAL_HDR_LEN + INV_CAL_CHK_LEN));
-
     if (chk != cmp_chk) {
+        MPL_LOGE("File checksum failed : 0x%08x VS 0x%08x\n",
+                 chk, cmp_chk);
         return INV_ERROR_CALIBRATION_CHECKSUM;
     }
 
@@ -1263,25 +1088,25 @@ inv_error_t inv_store_cal(unsigned char *calData, int length)
     // data
     ptr = 6;
     for (i = 0; i < BINS; i++) {
-        tmp = (int)inv_obj.temp_ptrs[i];
+        tmp = (int)inv_obj.gyro_tc->temp_ptrs[i];
         calData[ptr++] = (unsigned char)((tmp >> 24) & 0xff);
         calData[ptr++] = (unsigned char)((tmp >> 16) & 0xff);
         calData[ptr++] = (unsigned char)((tmp >> 8) & 0xff);
         calData[ptr++] = (unsigned char)(tmp & 0xff);
-        STORECAL_LOG("temp_ptrs[%d] = %lld\n", i, tmp);
+        STORECAL_LOG("gyro_tc->temp_ptrs[%d] = %lld\n", i, tmp);
     }
 
     for (i = 0; i < BINS; i++) {
-        tmp = (int)inv_obj.temp_valid_data[i];
+        tmp = (int)inv_obj.gyro_tc->temp_valid_data[i];
         calData[ptr++] = (unsigned char)((tmp >> 24) & 0xff);
         calData[ptr++] = (unsigned char)((tmp >> 16) & 0xff);
         calData[ptr++] = (unsigned char)((tmp >> 8) & 0xff);
         calData[ptr++] = (unsigned char)(tmp & 0xff);
-        STORECAL_LOG("temp_valid_data[%d] = %lld\n", i, tmp);
+        STORECAL_LOG("mlTempValid[%d] = %lld\n", i, tmp);
     }
     for (i = 0; i < BINS; i++) {
         for (j = 0; j < PTS_PER_BIN; j++) {
-            tmp = (long long)(inv_obj.temp_data[i][j] * 65536.0f);
+            tmp = (long long)(inv_obj.gyro_tc->temp_data[i][j] * 65536.0f);
             if (tmp < 0) {
                 tmp += 4294967296LL;
             }
@@ -1289,14 +1114,14 @@ inv_error_t inv_store_cal(unsigned char *calData, int length)
             calData[ptr++] = (unsigned char)((tmp >> 16) & 0xff);
             calData[ptr++] = (unsigned char)((tmp >> 8) & 0xff);
             calData[ptr++] = (unsigned char)(tmp & 0xff);
-            STORECAL_LOG("temp_data[%d][%d] = %f\n",
-                         i, j, inv_obj.temp_data[i][j]);
+            STORECAL_LOG("gyro_tc->temp_data[%d][%d] = %f\n",
+                         i, j, inv_obj.gyro_tc->temp_data[i][j]);
         }
     }
 
     for (i = 0; i < BINS; i++) {
         for (j = 0; j < PTS_PER_BIN; j++) {
-            tmp = (long long)(inv_obj.x_gyro_temp_data[i][j] * 65536.0f);
+            tmp = (long long)(inv_obj.gyro_tc->x_gyro_temp_data[i][j] * 65536.0f);
             if (tmp < 0) {
                 tmp += 4294967296LL;
             }
@@ -1304,13 +1129,13 @@ inv_error_t inv_store_cal(unsigned char *calData, int length)
             calData[ptr++] = (unsigned char)((tmp >> 16) & 0xff);
             calData[ptr++] = (unsigned char)((tmp >> 8) & 0xff);
             calData[ptr++] = (unsigned char)(tmp & 0xff);
-            STORECAL_LOG("x_gyro_temp_data[%d][%d] = %f\n",
-                         i, j, inv_obj.x_gyro_temp_data[i][j]);
+            STORECAL_LOG("gyro_tc->x_gyro_temp_data[%d][%d] = %f\n",
+                         i, j, inv_obj.gyro_tc->x_gyro_temp_data[i][j]);
         }
     }
     for (i = 0; i < BINS; i++) {
         for (j = 0; j < PTS_PER_BIN; j++) {
-            tmp = (long long)(inv_obj.y_gyro_temp_data[i][j] * 65536.0f);
+            tmp = (long long)(inv_obj.gyro_tc->y_gyro_temp_data[i][j] * 65536.0f);
             if (tmp < 0) {
                 tmp += 4294967296LL;
             }
@@ -1318,13 +1143,13 @@ inv_error_t inv_store_cal(unsigned char *calData, int length)
             calData[ptr++] = (unsigned char)((tmp >> 16) & 0xff);
             calData[ptr++] = (unsigned char)((tmp >> 8) & 0xff);
             calData[ptr++] = (unsigned char)(tmp & 0xff);
-            STORECAL_LOG("y_gyro_temp_data[%d][%d] = %f\n",
-                         i, j, inv_obj.y_gyro_temp_data[i][j]);
+            STORECAL_LOG("gyro_tc->y_gyro_temp_data[%d][%d] = %f\n",
+                         i, j, inv_obj.gyro_tc->y_gyro_temp_data[i][j]);
         }
     }
     for (i = 0; i < BINS; i++) {
         for (j = 0; j < PTS_PER_BIN; j++) {
-            tmp = (long long)(inv_obj.z_gyro_temp_data[i][j] * 65536.0f);
+            tmp = (long long)(inv_obj.gyro_tc->z_gyro_temp_data[i][j] * 65536.0f);
             if (tmp < 0) {
                 tmp += 4294967296LL;
             }
@@ -1332,8 +1157,8 @@ inv_error_t inv_store_cal(unsigned char *calData, int length)
             calData[ptr++] = (unsigned char)((tmp >> 16) & 0xff);
             calData[ptr++] = (unsigned char)((tmp >> 8) & 0xff);
             calData[ptr++] = (unsigned char)(tmp & 0xff);
-            STORECAL_LOG("z_gyro_temp_data[%d][%d] = %f\n",
-                         i, j, inv_obj.z_gyro_temp_data[i][j]);
+            STORECAL_LOG("gyro_tc->z_gyro_temp_data[%d][%d] = %f\n",
+                         i, j, inv_obj.gyro_tc->z_gyro_temp_data[i][j]);
         }
     }
 
@@ -1350,87 +1175,61 @@ inv_error_t inv_store_cal(unsigned char *calData, int length)
     }
 
     /* write the compass calibration state */
-    calData[ptr++] = (unsigned char)(inv_obj.got_compass_bias);
-    STORECAL_LOG("got_compass_bias = %ld\n", inv_obj.got_compass_bias);
-    calData[ptr++] = (unsigned char)(inv_obj.got_init_compass_bias);
-    STORECAL_LOG("got_init_compass_bias = %d\n", inv_obj.got_init_compass_bias);
-    if (inv_obj.compass_state == SF_UNCALIBRATED) {
+    calData[ptr++] = (unsigned char)(inv_obj.adv_fusion->got_compass_bias);
+    STORECAL_LOG("adv_fusion->got_compass_bias = %d\n", inv_obj.adv_fusion->got_compass_bias);
+    calData[ptr++] = (unsigned char)(inv_obj.adv_fusion->got_init_compass_bias);
+    STORECAL_LOG("adv_fusion->got_init_compass_bias = %d\n", inv_obj.adv_fusion->got_init_compass_bias);
+    if (inv_obj.adv_fusion->compass_state == SF_UNCALIBRATED) {
         calData[ptr++] = SF_UNCALIBRATED;
     } else {
         calData[ptr++] = SF_STARTUP_SETTLE;
     }
-    STORECAL_LOG("compass_state = %ld\n", inv_obj.compass_state);
+    STORECAL_LOG("adv_fusion->compass_state = %d\n", inv_obj.adv_fusion->compass_state);
 
     for (i = 0; i < 3; i++) {
-        uint32_t t = (uint32_t) inv_obj.compass_bias_error[i];
+        uint32_t t = (uint32_t) inv_obj.adv_fusion->compass_bias_error[i];
         calData[ptr++] = (unsigned char)((t >> 24) & 0xff);
         calData[ptr++] = (unsigned char)((t >> 16) & 0xff);
         calData[ptr++] = (unsigned char)((t >> 8) & 0xff);
         calData[ptr++] = (unsigned char)(t & 0xff);
         STORECAL_LOG("compass_bias_error[%d] = %ld\n",
-                     i, inv_obj.compass_bias_error[i]);
+                     i, inv_obj.adv_fusion->compass_bias_error[i]);
+    }
+    for (i = 0; i < 3*4; i++) {
+        calData[ptr++] = 0;
     }
     for (i = 0; i < 3; i++) {
-        uint32_t t = (uint32_t) inv_obj.init_compass_bias[i];
+        uint32_t t = (uint32_t) inv_obj.mag->bias[i];
         calData[ptr++] = (unsigned char)((t >> 24) & 0xff);
         calData[ptr++] = (unsigned char)((t >> 16) & 0xff);
         calData[ptr++] = (unsigned char)((t >> 8) & 0xff);
         calData[ptr++] = (unsigned char)(t & 0xff);
-        STORECAL_LOG("init_compass_bias[%d] = %ld\n", i,
-                     inv_obj.init_compass_bias[i]);
-    }
-    for (i = 0; i < 3; i++) {
-        uint32_t t = (uint32_t) inv_obj.compass_bias[i];
-        calData[ptr++] = (unsigned char)((t >> 24) & 0xff);
-        calData[ptr++] = (unsigned char)((t >> 16) & 0xff);
-        calData[ptr++] = (unsigned char)((t >> 8) & 0xff);
-        calData[ptr++] = (unsigned char)(t & 0xff);
-        STORECAL_LOG("compass_bias[%d] = %ld\n", i, inv_obj.compass_bias[i]);
+        STORECAL_LOG("compass_bias[%d] = %ld\n", i, inv_obj.mag->bias[i]);
     }
     for (i = 0; i < 18; i++) {
-        uint32_t t = (uint32_t) inv_obj.compass_peaks[i];
+        uint32_t t = (uint32_t) inv_obj.adv_fusion->compass_peaks[i];
         calData[ptr++] = (unsigned char)((t >> 24) & 0xff);
         calData[ptr++] = (unsigned char)((t >> 16) & 0xff);
         calData[ptr++] = (unsigned char)((t >> 8) & 0xff);
         calData[ptr++] = (unsigned char)(t & 0xff);
-        STORECAL_LOG("compass_peaks[%d] = %d\n", i, inv_obj.compass_peaks[i]);
+        STORECAL_LOG("adv_fusion->compass_peaks[%d] = %d\n", i, inv_obj.adv_fusion->compass_peaks[i]);
+    }
+    for (i = 0; i < 3*8; i++) {
+        calData[ptr++] = 0;
+    }
+    for (i = 0; i < 9*8; i++) {
+        calData[ptr++] = 0;
     }
     for (i = 0; i < 3; i++) {
-        dToLL.db = inv_obj.compass_bias_v[i];
-        calData[ptr++] = (unsigned char)((dToLL.ll >> 56) & 0xff);
-        calData[ptr++] = (unsigned char)((dToLL.ll >> 48) & 0xff);
-        calData[ptr++] = (unsigned char)((dToLL.ll >> 40) & 0xff);
-        calData[ptr++] = (unsigned char)((dToLL.ll >> 32) & 0xff);
-        calData[ptr++] = (unsigned char)((dToLL.ll >> 24) & 0xff);
-        calData[ptr++] = (unsigned char)((dToLL.ll >> 16) & 0xff);
-        calData[ptr++] = (unsigned char)((dToLL.ll >> 8) & 0xff);
-        calData[ptr++] = (unsigned char)(dToLL.ll & 0xff);
-        STORECAL_LOG("compass_bias_v[%d] = %lf\n", i,
-                     inv_obj.compass_bias_v[i]);
-    }
-    for (i = 0; i < 9; i++) {
-        dToLL.db = inv_obj.compass_bias_ptr[i];
-        calData[ptr++] = (unsigned char)((dToLL.ll >> 56) & 0xff);
-        calData[ptr++] = (unsigned char)((dToLL.ll >> 48) & 0xff);
-        calData[ptr++] = (unsigned char)((dToLL.ll >> 40) & 0xff);
-        calData[ptr++] = (unsigned char)((dToLL.ll >> 32) & 0xff);
-        calData[ptr++] = (unsigned char)((dToLL.ll >> 24) & 0xff);
-        calData[ptr++] = (unsigned char)((dToLL.ll >> 16) & 0xff);
-        calData[ptr++] = (unsigned char)((dToLL.ll >> 8) & 0xff);
-        calData[ptr++] = (unsigned char)(dToLL.ll & 0xff);
-        STORECAL_LOG("compass_bias_ptr[%d] = %lf\n", i,
-                     inv_obj.compass_bias_ptr[i]);
-    }
-    for (i = 0; i < 3; i++) {
-        uint32_t t = (uint32_t) inv_obj.compass_scale[i];
+        uint32_t t = (uint32_t) inv_obj.adv_fusion->compass_scale[i];
         calData[ptr++] = (unsigned char)((t >> 24) & 0xff);
         calData[ptr++] = (unsigned char)((t >> 16) & 0xff);
         calData[ptr++] = (unsigned char)((t >> 8) & 0xff);
         calData[ptr++] = (unsigned char)(t & 0xff);
-        STORECAL_LOG("compass_scale[%d] = %ld\n", i, inv_obj.compass_scale[i]);
+        STORECAL_LOG("adv_fusion->compass_scale[%d] = %ld\n", i, inv_obj.adv_fusion->compass_scale[i]);
     }
     for (i = 0; i < 6; i++) {
-        dToLL.db = inv_obj.compass_prev_xty[i];
+        dToLL.db = inv_obj.adv_fusion->compass_prev_xty[i];
         calData[ptr++] = (unsigned char)((dToLL.ll >> 56) & 0xff);
         calData[ptr++] = (unsigned char)((dToLL.ll >> 48) & 0xff);
         calData[ptr++] = (unsigned char)((dToLL.ll >> 40) & 0xff);
@@ -1439,11 +1238,11 @@ inv_error_t inv_store_cal(unsigned char *calData, int length)
         calData[ptr++] = (unsigned char)((dToLL.ll >> 16) & 0xff);
         calData[ptr++] = (unsigned char)((dToLL.ll >> 8) & 0xff);
         calData[ptr++] = (unsigned char)(dToLL.ll & 0xff);
-        STORECAL_LOG("compass_prev_xty[%d] = %lf\n", i,
-                     inv_obj.compass_prev_xty[i]);
+        STORECAL_LOG("adv_fusion->compass_prev_xty[%d] = %lf\n", i,
+                     inv_obj.adv_fusion->compass_prev_xty[i]);
     }
     for (i = 0; i < 36; i++) {
-        dToLL.db = inv_obj.compass_prev_m[i];
+        dToLL.db = inv_obj.adv_fusion->compass_prev_m[i];
         calData[ptr++] = (unsigned char)((dToLL.ll >> 56) & 0xff);
         calData[ptr++] = (unsigned char)((dToLL.ll >> 48) & 0xff);
         calData[ptr++] = (unsigned char)((dToLL.ll >> 40) & 0xff);
@@ -1452,18 +1251,9 @@ inv_error_t inv_store_cal(unsigned char *calData, int length)
         calData[ptr++] = (unsigned char)((dToLL.ll >> 16) & 0xff);
         calData[ptr++] = (unsigned char)((dToLL.ll >> 8) & 0xff);
         calData[ptr++] = (unsigned char)(dToLL.ll & 0xff);
-        STORECAL_LOG("compass_prev_m[%d] = %lf\n", i,
-                     inv_obj.compass_prev_m[i]);
+        STORECAL_LOG("adv_fusion->compass_prev_m[%d] = %lf\n", i,
+                     inv_obj.adv_fusion->compass_prev_m[i]);
     }
-
-    /* store the compass offsets and validity flag */
-    calData[ptr++] = (unsigned char)inv_obj.flags[INV_COMPASS_OFFSET_VALID];
-    calData[ptr++] = (unsigned char)inv_obj.compass_offsets[0];
-    calData[ptr++] = (unsigned char)inv_obj.compass_offsets[1];
-    calData[ptr++] = (unsigned char)inv_obj.compass_offsets[2];
-
-    /* store the compass accuracy */
-    calData[ptr++] = (unsigned char)(inv_obj.compass_accuracy);
 
     /* add a checksum */
     chk = inv_checksum(calData + INV_CAL_HDR_LEN,
@@ -1524,12 +1314,9 @@ inv_error_t inv_load_calibration(void)
         MPL_LOGE("Could not load the calibration data - "
                  "error %d - aborting\n", result);
         goto free_mem_n_exit;
-
     }
 
-
-
-free_mem_n_exit:    
+free_mem_n_exit:
     inv_free(calData);
     return INV_SUCCESS;
 }

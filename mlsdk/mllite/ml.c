@@ -1,23 +1,11 @@
 /*
  $License:
-   Copyright 2011 InvenSense, Inc.
-
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
-
- http://www.apache.org/licenses/LICENSE-2.0
-
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
-  $
+    Copyright (C) 2011 InvenSense Corporation, All Rights Reserved.
+ $
  */
 /******************************************************************************
  *
- * $Id: ml.c 5642 2011-06-14 02:26:20Z mcaramello $
+ * $Id: ml.c 6218 2011-10-19 04:13:47Z mcaramello $
  *
  *****************************************************************************/
 
@@ -64,7 +52,10 @@
 #include "mlsl.h"
 #include "mlos.h"
 #include "mlBiasNoMotion.h"
+#include "temp_comp.h"
 #include "log.h"
+#include "mlSetGyroBias.h"
+
 #undef MPL_LOG_TAG
 #define MPL_LOG_TAG "MPL-ml"
 
@@ -76,13 +67,13 @@
 #define ML_MOT_STATE_NO_MOTION 1
 #define ML_MOT_STATE_BIAS_IN_PROG 2
 
+#define SIGNSET(x) ((x) ? -1 : +1)
 #define _mlDebug(x)             //{x}
 
 /* Global Variables */
 const unsigned char mlVer[] = { INV_VERSION };
 
 struct inv_params_obj inv_params_obj = {
-    INV_BIAS_UPDATE_FUNC_DEFAULT,   // bias_mode
     INV_ORIENTATION_MASK_DEFAULT,   // orientation_mask
     INV_PROCESSED_DATA_CALLBACK_DEFAULT,    // fifo_processed_func
     INV_ORIENTATION_CALLBACK_DEFAULT,   // orientation_cb_func
@@ -90,8 +81,9 @@ struct inv_params_obj inv_params_obj = {
     INV_STATE_SERIAL_CLOSED     // starting state
 };
 
-struct inv_obj_t inv_obj;
 void *g_mlsl_handle;
+unsigned short inv_gyro_orient;
+unsigned short inv_accel_orient;
 
 typedef struct {
     // These describe callbacks happening everythime a DMP interrupt is processed
@@ -103,13 +95,22 @@ typedef struct {
 
 tMLXCallbackInterrupt mlxCallbackInterrupt;
 
+void inv_init_ml_cb (void)
+{
+    memset(&mlxCallbackInterrupt, 0, sizeof(tMLXCallbackInterrupt));
+}
+
+
 /* --------------- */
 /* -  Functions. - */
 /* --------------- */
 
-inv_error_t inv_freescale_sensor_fusion_16bit(unsigned short orient);
-inv_error_t inv_freescale_sensor_fusion_8bit(unsigned short orient);
-unsigned short inv_orientation_matrix_to_scalar(const signed char *mtx);
+inv_error_t inv_freescale_sensor_fusion_16bit();
+inv_error_t inv_freescale_sensor_fusion_8bit();
+void inv_mpu6050_accel(unsigned short orient, int mode, unsigned char *instr);
+static inv_error_t inv_dead_zone_CB(unsigned char new_state);
+static inv_error_t inv_bias_from_LPF_CB(unsigned char new_state);
+static inv_error_t inv_bias_from_gravity_CB(unsigned char new_state);
 
 /**
  *  @brief  Open serial connection with the MPU device.
@@ -180,6 +181,22 @@ void *inv_get_serial_handle(void)
     return g_mlsl_handle;
 }
 
+
+inv_error_t inv_read_compass_asa( long * asa )
+{
+    INVENSENSE_FUNC_START;
+    int ii;
+    long tmp[COMPASS_NUM_AXES];
+    inv_error_t result;
+
+    result = inv_compass_read_scale(tmp);
+    if (result == INV_SUCCESS) {
+        for (ii = 0; ii < COMPASS_NUM_AXES; ii++)
+            asa[ii] = tmp[ii];
+    }
+    return result;
+}
+
 /**
  *  @brief  apply the choosen orientation and full scale range
  *          for gyroscopes, accelerometer, and compass.
@@ -188,10 +205,8 @@ void *inv_get_serial_handle(void)
 inv_error_t inv_apply_calibration(void)
 {
     INVENSENSE_FUNC_START;
-    signed char gyroCal[9] = { 0 };
     signed char accelCal[9] = { 0 };
     signed char magCal[9] = { 0 };
-    float gyroScale = 2000.f;
     float accelScale = 0.f;
     float magScale = 0.f;
 
@@ -199,60 +214,55 @@ inv_error_t inv_apply_calibration(void)
     int ii;
     struct mldl_cfg *mldl_cfg = inv_get_dl_config();
 
-    for (ii = 0; ii < 9; ii++) {
-        gyroCal[ii] = mldl_cfg->pdata->orientation[ii];
-        accelCal[ii] = mldl_cfg->pdata->accel.orientation[ii];
-        magCal[ii] = mldl_cfg->pdata->compass.orientation[ii];
+    if (mldl_cfg->pdata_slave[EXT_SLAVE_TYPE_ACCEL]) {
+        for (ii = 0; ii < 9; ii++) {
+            accelCal[ii] =
+                mldl_cfg->pdata_slave[EXT_SLAVE_TYPE_ACCEL]->orientation[ii];
+        }
+        RANGE_FIXEDPOINT_TO_FLOAT(
+            mldl_cfg->slave[EXT_SLAVE_TYPE_ACCEL]->range, accelScale);
+        inv_obj.accel->sens = (long)(accelScale * 65536L);
+        /* sensitivity adjustment, typically = 2 (for +/- 2 gee) */
+        inv_obj.accel->sens /= 2;
     }
-
-    switch (mldl_cfg->full_scale) {
-    case MPU_FS_250DPS:
-        gyroScale = 250.f;
-        break;
-    case MPU_FS_500DPS:
-        gyroScale = 500.f;
-        break;
-    case MPU_FS_1000DPS:
-        gyroScale = 1000.f;
-        break;
-    case MPU_FS_2000DPS:
-        gyroScale = 2000.f;
-        break;
-    default:
-        MPL_LOGE("Unrecognized full scale setting for gyros : %02X\n",
-                 mldl_cfg->full_scale);
-        return INV_ERROR_INVALID_PARAMETER;
-        break;
+    if (mldl_cfg->pdata_slave[EXT_SLAVE_TYPE_COMPASS]) {
+        for (ii = 0; ii < 9; ii++) {
+            magCal[ii] =
+                mldl_cfg->pdata_slave[EXT_SLAVE_TYPE_COMPASS]->orientation[ii];
+        }
+        RANGE_FIXEDPOINT_TO_FLOAT(
+            mldl_cfg->slave[EXT_SLAVE_TYPE_COMPASS]->range, magScale);
+        inv_obj.mag->sens = (long)(magScale * 32768);
     }
-
-    RANGE_FIXEDPOINT_TO_FLOAT(mldl_cfg->accel->range, accelScale);
-    inv_obj.accel_sens = (long)(accelScale * 65536L);
-    /* sensitivity adjustment, typically = 2 (for +/- 2 gee) */
-#if defined CONFIG_MPU_SENSORS_MPU6050A2 || \
-    defined CONFIG_MPU_SENSORS_MPU6050B1
-    inv_obj.accel_sens /= 32768 / mldl_cfg->accel_sens_trim;
-#else
-    inv_obj.accel_sens /= 2;
-#endif
-
-    RANGE_FIXEDPOINT_TO_FLOAT(mldl_cfg->compass->range, magScale);
-    inv_obj.compass_sens = (long)(magScale * 32768);
-
     if (inv_get_state() == INV_STATE_DMP_OPENED) {
-        result = inv_set_gyro_calibration(gyroScale, gyroCal);
-        if (INV_SUCCESS != result) {
-            MPL_LOGE("Unable to set Gyro Calibration\n");
+        inv_gyro_orient = inv_orientation_matrix_to_scalar(mldl_cfg->pdata->orientation);
+        result = inv_gyro_dmp_cal();
+        if (result != INV_SUCCESS) {
+            MPL_LOGE("Unable to set Gyro DMP Calibration\n");
             return result;
         }
-        result = inv_set_accel_calibration(accelScale, accelCal);
-        if (INV_SUCCESS != result) {
-            MPL_LOGE("Unable to set Accel Calibration\n");
+        result = inv_gyro_var_cal();
+        if (result != INV_SUCCESS) {
+            MPL_LOGE("Unable to set Gyro Variable Calibration\n");
             return result;
         }
-        result = inv_set_compass_calibration(magScale, magCal);
-        if (INV_SUCCESS != result) {
-            MPL_LOGE("Unable to set Mag Calibration\n");
+        inv_set_accel_mounting(accelCal);
+        result = inv_accel_dmp_cal();
+        if (result != INV_SUCCESS) {
+            MPL_LOGE("Unable to set Accel DMP Calibration\n");
             return result;
+        }
+        result = inv_accel_var_cal();
+        if (result != INV_SUCCESS) {
+            MPL_LOGE("Unable to set Accel Variable Calibration\n");
+            return result;
+        }
+        if (mldl_cfg->slave[EXT_SLAVE_TYPE_COMPASS]) {
+            result = inv_set_compass_calibration(magScale, magCal);
+            if (INV_SUCCESS != result) {
+                MPL_LOGE("Unable to set Mag Calibration\n");
+                return result;
+            }
         }
     }
     return INV_SUCCESS;
@@ -267,9 +277,17 @@ inv_error_t inv_apply_endian_accel(void)
     INVENSENSE_FUNC_START;
     unsigned char regs[4] = { 0 };
     struct mldl_cfg *mldl_cfg = inv_get_dl_config();
-    int endian = mldl_cfg->accel->endian;
+    int endian;
 
-    if (mldl_cfg->pdata->accel.bus != EXT_SLAVE_BUS_SECONDARY) {
+    if (!mldl_cfg->slave[EXT_SLAVE_TYPE_ACCEL]) {
+        LOG_RESULT_LOCATION(INV_ERROR_INVALID_CONFIGURATION);
+        return INV_ERROR_INVALID_CONFIGURATION;
+    }
+
+    endian = mldl_cfg->slave[EXT_SLAVE_TYPE_ACCEL]->endian;
+
+    if (mldl_cfg->pdata_slave[EXT_SLAVE_TYPE_ACCEL]->bus !=
+        EXT_SLAVE_BUS_SECONDARY) {
         endian = EXT_SLAVE_BIG_ENDIAN;
     }
     switch (endian) {
@@ -290,80 +308,6 @@ inv_error_t inv_apply_endian_accel(void)
     }
 
     return inv_set_mpu_memory(KEY_D_1_236, 4, regs);
-}
-
-/**
- * @internal
- * @brief   Initialize MLX data.  This should be called to setup the mlx
- *          output buffers before any motion processing is done.
- */
-void inv_init_ml(void)
-{
-    INVENSENSE_FUNC_START;
-    int ii;
-    long tmp[COMPASS_NUM_AXES];
-    // Set all values to zero by default
-    memset(&inv_obj, 0, sizeof(struct inv_obj_t));
-    memset(&mlxCallbackInterrupt, 0, sizeof(tMLXCallbackInterrupt));
-
-    inv_obj.compass_correction[0] = 1073741824L;
-    inv_obj.compass_correction_relative[0] = 1073741824L;
-    inv_obj.compass_disturb_correction[0] = 1073741824L;
-    inv_obj.compass_correction_offset[0] = 1073741824L;
-    inv_obj.relative_quat[0] = 1073741824L;
-
-    //Not used with the ST accelerometer
-    inv_obj.no_motion_threshold = 20;   // noMotionThreshold
-    //Not used with the ST accelerometer
-    inv_obj.motion_duration = 1536; // motionDuration
-
-    inv_obj.motion_state = INV_MOTION;  // Motion state
-
-    inv_obj.bias_update_time = 8000;
-    inv_obj.bias_calc_time = 2000;
-
-    inv_obj.internal_motion_state = ML_MOT_STATE_MOVING;
-
-    inv_obj.start_time = inv_get_tick_count();
-
-    inv_obj.compass_cal[0] = 322122560L;
-    inv_obj.compass_cal[4] = 322122560L;
-    inv_obj.compass_cal[8] = 322122560L;
-    inv_obj.compass_sens = 322122560L;  // Should only change when the sensor full-scale range (FSR) is changed.
-
-    for (ii = 0; ii < COMPASS_NUM_AXES; ii++) {
-        inv_obj.compass_scale[ii] = 65536L;
-        inv_obj.compass_test_scale[ii] = 65536L;
-        inv_obj.compass_bias_error[ii] = P_INIT;
-        inv_obj.init_compass_bias[ii] = 0;
-        inv_obj.compass_asa[ii] = (1L << 30);
-    }
-    if (inv_compass_read_scale(tmp) == INV_SUCCESS) {
-        for (ii = 0; ii < COMPASS_NUM_AXES; ii++)
-            inv_obj.compass_asa[ii] = tmp[ii];
-    }
-    inv_obj.got_no_motion_bias = 0;
-    inv_obj.got_compass_bias = 0;
-    inv_obj.compass_state = SF_UNCALIBRATED;
-    inv_obj.acc_state = SF_STARTUP_SETTLE;
-
-    inv_obj.got_init_compass_bias = 0;
-    inv_obj.resetting_compass = 0;
-
-    inv_obj.external_slave_callback = NULL;
-    inv_obj.compass_accuracy = 0;
-
-    inv_obj.factory_temp_comp = 0;
-    inv_obj.got_coarse_heading = 0;
-
-    inv_obj.compass_bias_ptr[0] = P_INIT;
-    inv_obj.compass_bias_ptr[4] = P_INIT;
-    inv_obj.compass_bias_ptr[8] = P_INIT;
-
-    inv_obj.gyro_bias_err = 1310720;
-
-    inv_obj.accel_lpf_gain = 1073744L;
-    inv_obj.no_motion_accel_threshold = 7000000L;
 }
 
 /**
@@ -445,10 +389,12 @@ inv_error_t inv_reset_motion(void)
     unsigned char regs[8];
     inv_error_t result;
 
-    inv_obj.motion_state = INV_MOTION;
-    inv_obj.flags[INV_MOTION_STATE_CHANGE] = INV_MOTION;
-    inv_obj.no_motion_accel_time = inv_get_tick_count();
-#if defined CONFIG_MPU_SENSORS_MPU3050
+    /* reset the motion/no motion callback state to MOTION first */
+    inv_set_motion_state(INV_MOTION);
+
+    inv_obj.lite_fusion->motion_state = INV_MOTION;
+    inv_obj.sys->flags[INV_MOTION_STATE_CHANGE] = INV_MOTION;
+    inv_obj.lite_fusion->no_motion_accel_time = inv_get_tick_count();
     regs[0] = DINAD8 + 2;
     regs[1] = DINA0C;
     regs[2] = DINAD8 + 1;
@@ -457,10 +403,8 @@ inv_error_t inv_reset_motion(void)
         LOG_RESULT_LOCATION(result);
         return result;
     }
-#else
-#endif
-    regs[0] = (unsigned char)((inv_obj.motion_duration >> 8) & 0xff);
-    regs[1] = (unsigned char)(inv_obj.motion_duration & 0xff);
+    regs[0] = (unsigned char)((inv_obj.lite_fusion->motion_duration >> 8) & 0xff);
+    regs[1] = (unsigned char)(inv_obj.lite_fusion->motion_duration & 0xff);
     result = inv_set_mpu_memory(KEY_D_1_106, 2, regs);
     if (result) {
         LOG_RESULT_LOCATION(result);
@@ -473,13 +417,42 @@ inv_error_t inv_reset_motion(void)
         return result;
     }
 
-    result =
-        inv_set_mpu_memory(KEY_D_0_96, 4, inv_int32_to_big8(0x40000000, regs));
+    result = inv_set_mpu_memory(KEY_D_0_96, 4, inv_int32_to_big8(   0x40000000, regs));
     if (result) {
         LOG_RESULT_LOCATION(result);
         return result;
     }
 
+    /* Motion is being reset, need to push the bias's back down */
+    if (inv_dmpkey_supported(KEY_D_2_96)) {
+        unsigned char bias[4 * GYRO_NUM_AXES];
+        long bias_value[GYRO_NUM_AXES], bias_tmp[GYRO_NUM_AXES];
+        int ii;
+        for (ii = 0; ii < GYRO_NUM_AXES; ii++) {
+            bias_tmp[ii] = inv_q30_mult(inv_obj.gyro->bias[ii], 767603923L);
+        }
+        for (ii = 0; ii < GYRO_NUM_AXES; ii++) {
+            bias_value[ii] =
+                inv_q30_mult(bias_tmp[0],
+                             inv_obj.calmat->gyro_orient[3 * ii]) +
+                inv_q30_mult(bias_tmp[1],
+                             inv_obj.calmat->gyro_orient[3 * ii + 1]) +
+                inv_q30_mult(bias_tmp[2],
+                             inv_obj.calmat->gyro_orient[3 * ii + 2]);
+            inv_int32_to_big8(bias_value[ii], &bias[4 * ii]);
+        }
+        result = inv_set_mpu_memory(KEY_D_2_96, 12, bias);
+        if (result) {
+            LOG_RESULT_LOCATION(result);
+            return result;
+        }
+    } else {
+        result = inv_set_gyro_bias_in_dps(inv_obj.gyro->bias, 0);
+        if (result) {
+            LOG_RESULT_LOCATION(result);
+            return result;
+        }
+    }
     inv_set_motion_state(INV_MOTION);
     return result;
 }
@@ -492,7 +465,7 @@ void inv_start_bias_calc(void)
 {
     INVENSENSE_FUNC_START;
 
-    inv_obj.suspend = 1;
+    inv_obj.adv_fusion->biascalc_suspend = 1;
 }
 
 /**
@@ -503,7 +476,7 @@ void inv_stop_bias_calc(void)
 {
     INVENSENSE_FUNC_START;
 
-    inv_obj.suspend = 0;
+    inv_obj.adv_fusion->biascalc_suspend = 0;
 }
 
 /**
@@ -535,7 +508,7 @@ inv_error_t inv_update_data(void)
         return INV_ERROR_SM_IMPROPER_STATE;
 
     // Set the maximum number of FIFO packets we want to process
-    if (mldl_cfg->requested_sensors & INV_DMP_PROCESSOR) {
+    if (mldl_cfg->inv_mpu_cfg->requested_sensors & INV_DMP_PROCESSOR) {
         ftry = 100;             // Large enough to process all packets
     } else {
         ftry = 1;
@@ -593,14 +566,14 @@ inv_error_t inv_update_data(void)
  *
  *  @param flag The flag to check.
  *
- * @return TRUE or FALSE state of the flag
+ * @return true or false state of the flag
  */
 int inv_check_flag(int flag)
 {
     INVENSENSE_FUNC_START;
-    int flagReturn = inv_obj.flags[flag];
+    int flagReturn = inv_obj.sys->flags[flag];
 
-    inv_obj.flags[flag] = 0;
+    inv_obj.sys->flags[flag] = 0;
     return flagReturn;
 }
 
@@ -621,16 +594,16 @@ inv_error_t inv_set_motion_interrupt(unsigned char on)
         return INV_ERROR_SM_IMPROPER_STATE;
 
     if (on) {
-        result = inv_get_dl_cfg_int(BIT_DMP_INT_EN);
+        result = inv_set_dl_cfg_int(BIT_DMP_INT_EN);
         if (result) {
             LOG_RESULT_LOCATION(result);
             return result;
         }
-        inv_obj.interrupt_sources |= INV_INT_MOTION;
+        inv_obj.sys->interrupt_sources |= INV_INT_MOTION;
     } else {
-        inv_obj.interrupt_sources &= ~INV_INT_MOTION;
-        if (!inv_obj.interrupt_sources) {
-            result = inv_get_dl_cfg_int(0);
+        inv_obj.sys->interrupt_sources &= ~INV_INT_MOTION;
+        if (!inv_obj.sys->interrupt_sources) {
+            result = inv_set_dl_cfg_int(0);
             if (result) {
                 LOG_RESULT_LOCATION(result);
                 return result;
@@ -668,16 +641,16 @@ inv_error_t inv_set_fifo_interrupt(unsigned char on)
         return INV_ERROR_SM_IMPROPER_STATE;
 
     if (on) {
-        result = inv_get_dl_cfg_int(BIT_DMP_INT_EN);
+        result = inv_set_dl_cfg_int(BIT_DMP_INT_EN);
         if (result) {
             LOG_RESULT_LOCATION(result);
             return result;
         }
-        inv_obj.interrupt_sources |= INV_INT_FIFO;
+        inv_obj.sys->interrupt_sources |= INV_INT_FIFO;
     } else {
-        inv_obj.interrupt_sources &= ~INV_INT_FIFO;
-        if (!inv_obj.interrupt_sources) {
-            result = inv_get_dl_cfg_int(0);
+        inv_obj.sys->interrupt_sources &= ~INV_INT_FIFO;
+        if (!inv_obj.sys->interrupt_sources) {
+            result = inv_set_dl_cfg_int(0);
             if (result) {
                 LOG_RESULT_LOCATION(result);
                 return result;
@@ -691,6 +664,61 @@ inv_error_t inv_set_fifo_interrupt(unsigned char on)
         regs[0] = DINAD8;
     }
     result = inv_set_mpu_memory(KEY_CFG_6, 1, regs);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    return result;
+}
+
+/**
+ * Enable generation of the DMP interrupt when data is ready for the DMP.
+ *
+ * This IRQ can be used to get a timestamp right before the DMP starts
+ * processing the data.  The FIFO interrupt can be between 2 and 5 ms later.
+ *
+ * @param on Boolean to turn the interrupt on or off
+ *
+ * @return INV_SUCCESS or non-zero error code
+ */
+inv_error_t inv_set_dmp_dr_interrupt(unsigned char on)
+{
+    INVENSENSE_FUNC_START;
+    inv_error_t result;
+    unsigned char regs[2] = { 0 };
+
+    if (inv_get_state() < INV_STATE_DMP_OPENED)
+        return INV_ERROR_SM_IMPROPER_STATE;
+
+    if (!inv_dmpkey_supported(KEY_CFG_DR_INT)) {
+        LOG_RESULT_LOCATION(INV_ERROR_FEATURE_NOT_IMPLEMENTED);
+        return INV_ERROR_FEATURE_NOT_IMPLEMENTED;
+    }
+
+    if (on) {
+        result = inv_set_dl_cfg_int(BIT_DMP_INT_EN);
+        if (result) {
+            LOG_RESULT_LOCATION(result);
+            return result;
+        }
+        inv_obj.sys->interrupt_sources |= INV_INT_DMP_DR;
+    } else {
+        inv_obj.sys->interrupt_sources &= ~INV_INT_DMP_DR;
+        if (!inv_obj.sys->interrupt_sources) {
+            result = inv_set_dl_cfg_int(0);
+            if (result) {
+                LOG_RESULT_LOCATION(result);
+                return result;
+            }
+        }
+    }
+
+    if (on) {
+        regs[0] = DIND40 + 1;
+    } else {
+        regs[0] = DINAD8;
+    }
+    result = inv_set_mpu_memory(KEY_CFG_DR_INT, 1, regs);
     if (result) {
         LOG_RESULT_LOCATION(result);
         return result;
@@ -723,56 +751,91 @@ int inv_get_interrupts(void)
     if (inv_get_state() < INV_STATE_DMP_OPENED)
         return 0;               // error
 
-    return inv_obj.interrupt_sources;
+    return inv_obj.sys->interrupt_sources;
 }
 
-/**
- *  @brief  Sets up the Accelerometer calibration and scale factor.
- *
- *          Please refer to the provided "9-Axis Sensor Fusion Application
- *          Note" document provided.  Section 5, "Sensor Mounting Orientation"
- *          offers a good coverage on the mounting matrices and explains how
- *          to use them.
- *
- *  @pre    inv_dmp_open()
- *          @ifnot MPL_MF
- *              or inv_open_low_power_pedometer()
- *              or inv_eis_open_dmp()
- *          @endif
- *          must have been called.
- *  @pre    inv_dmp_start() must <b>NOT</b> have been called.
- *
- *  @see    inv_set_gyro_calibration().
- *  @see    inv_set_compass_calibration().
- *
- *  @param[in]  range
- *                  The range of the accelerometers in g's. An accelerometer
- *                  that has a range of +2g's to -2g's should pass in 2.
- *  @param[in]  orientation
- *                  A 9 element matrix that represents how the accelerometers
- *                  are oriented with respect to the device they are mounted
- *                  in and the reference axis system.
- *                  A typical set of values are {1, 0, 0, 0, 1, 0, 0, 0, 1}.
- *                  This example corresponds to a 3 x 3 identity matrix.
- *
- *  @return INV_SUCCESS if successful; a non-zero error code otherwise.
- */
-inv_error_t inv_set_accel_calibration(float range, signed char *orientation)
+void inv_mpu6050_accel(unsigned short orient, int mode, unsigned char *regs)
+{
+    unsigned char tmp[3];
+    unsigned char tmp1;
+    unsigned char tmp2;
+
+    regs[0] = DINA90 + 7;
+    regs[1] = DINA90 + 7;
+    regs[2] = DINA90 + 7;
+    regs[3] = DINA90 + 7;
+    regs[4] = DINA90 + 7;
+    regs[5] = DINA90 + 7;
+
+    switch (mode) {
+        case 0:
+            tmp[0] = DINA0C;
+            tmp[1] = DINAC9;
+            tmp[2] = DINA2C;
+            regs[0] = tmp[orient & 3];
+            regs[1] = tmp[(orient >> 3) & 3];
+            regs[2] = tmp[(orient >> 6) & 3];
+            break;
+        case 1:
+            tmp[0] = DINA4C;
+            tmp[1] = DINACD;
+            tmp[2] = DINA6C;
+            tmp1 = DINA80 + 1;
+            regs[0] = tmp1;
+            regs[1] = tmp[orient & 3];
+            regs[2] = tmp[(orient >> 3) & 3];
+            regs[3] = tmp[(orient >> 6) & 3];
+            break;
+        case 2:
+            tmp[0] = DINACF;
+            tmp[1] = DINA0C;
+            tmp[2] = DINAC9;
+            tmp1 = DINA80;
+            tmp2 = DINA80 + 1;
+            if (orient & 3) { //X is Z or Y
+                regs[0] = tmp2;
+                regs[1] = tmp[orient & 3];
+                if ((orient >> 3) & 3) { //ZYX or YZX
+                    regs[2] = tmp[(orient >> 3) & 3];
+                    regs[3] = tmp1;
+                    regs[4] = tmp[(orient >> 6) & 3];
+                } else { //ZXY or YXZ
+                    regs[2] = tmp1;
+                    regs[3] = tmp[(orient >> 3) & 3];
+                    regs[4] = tmp2;
+                    regs[5] = tmp[(orient >> 6) & 3];
+                }
+            } else { //XYZ or XZY
+                regs[0] = tmp1;
+                regs[1] = tmp[orient & 3];
+                regs[2] = tmp2;
+                regs[3] = tmp[(orient >> 3) & 3];
+                regs[4] = tmp[(orient >> 6) & 3];
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+inv_error_t inv_accel_dmp_cal(void)
 {
     INVENSENSE_FUNC_START;
-    float cal[9];
-    float scale = range / 32768.f;
-    int kk;
     unsigned long sf;
     inv_error_t result;
-    unsigned char regs[4] = { 0, 0, 0, 0 };
+    unsigned char regs[6] = { 0, 0, 0, 0, 0, 0};
     struct mldl_cfg *mldl_cfg = inv_get_dl_config();
 
     if (inv_get_state() != INV_STATE_DMP_OPENED)
         return INV_ERROR_SM_IMPROPER_STATE;
 
+    if (!mldl_cfg->slave[EXT_SLAVE_TYPE_ACCEL]) {
+        LOG_RESULT_LOCATION(INV_ERROR_INVALID_CONFIGURATION);
+        return INV_ERROR_INVALID_CONFIGURATION;
+    }
+
     /* Apply zero g-offset values */
-    if (ACCEL_ID_KXSD9 == mldl_cfg->accel->id) {
+    if (ACCEL_ID_KXSD9 == mldl_cfg->slave[EXT_SLAVE_TYPE_ACCEL]->id) {
         regs[0] = 0x80;
         regs[1] = 0x0;
         regs[2] = 0x80;
@@ -787,31 +850,16 @@ inv_error_t inv_set_accel_calibration(float range, signed char *orientation)
         }
     }
 
-    if (scale == 0) {
-        inv_obj.accel_sens = 0;
-    }
-
-    if (mldl_cfg->accel->id) {
-#if defined CONFIG_MPU_SENSORS_MPU6050A2 || \
-    defined CONFIG_MPU_SENSORS_MPU6050B1
-        unsigned char tmp[3] = { DINA0C, DINAC9, DINA2C };
-#else
+    if (mldl_cfg->slave[EXT_SLAVE_TYPE_ACCEL]->id) {
         unsigned char tmp[3] = { DINA4C, DINACD, DINA6C };
-#endif
         struct mldl_cfg *mldl_cfg = inv_get_dl_config();
         unsigned char regs[3];
-        unsigned short orient;
 
-        for (kk = 0; kk < 9; ++kk) {
-            cal[kk] = scale * orientation[kk];
-            inv_obj.accel_cal[kk] = (long)(cal[kk] * (float)(1L << 30));
-        }
-
-        orient = inv_orientation_matrix_to_scalar(orientation);
-        regs[0] = tmp[orient & 3];
-        regs[1] = tmp[(orient >> 3) & 3];
-        regs[2] = tmp[(orient >> 6) & 3];
+        regs[0] = tmp[inv_accel_orient & 3];
+        regs[1] = tmp[(inv_accel_orient >> 3) & 3];
+        regs[2] = tmp[(inv_accel_orient >> 6) & 3];
         result = inv_set_mpu_memory(KEY_FCFG_2, 3, regs);
+
         if (result) {
             LOG_RESULT_LOCATION(result);
             return result;
@@ -819,20 +867,12 @@ inv_error_t inv_set_accel_calibration(float range, signed char *orientation)
 
         regs[0] = DINA26;
         regs[1] = DINA46;
-#if defined CONFIG_MPU_SENSORS_MPU3050 || defined CONFIG_MPU_SENSORS_MPU6050A2
         regs[2] = DINA66;
-#else
-        if (MPL_PROD_KEY(mldl_cfg->product_id, mldl_cfg->product_revision)
-                == MPU_PRODUCT_KEY_B1_E1_5)
-            regs[2] = DINA76;
-        else
-            regs[2] = DINA66;
-#endif
-        if (orient & 4)
+        if (inv_accel_orient & 4)
             regs[0] |= 1;
-        if (orient & 0x20)
+        if (inv_accel_orient & 0x20)
             regs[1] |= 1;
-        if (orient & 0x100)
+        if (inv_accel_orient & 0x100)
             regs[2] |= 1;
 
         result = inv_set_mpu_memory(KEY_FCFG_7, 3, regs);
@@ -841,14 +881,15 @@ inv_error_t inv_set_accel_calibration(float range, signed char *orientation)
             return result;
         }
 
-        if (mldl_cfg->accel->id == ACCEL_ID_MMA845X) {
-            result = inv_freescale_sensor_fusion_16bit(orient);
+        if (mldl_cfg->slave[EXT_SLAVE_TYPE_ACCEL]->id == ACCEL_ID_MMA845X) {
+            result = inv_freescale_sensor_fusion_16bit();
             if (result) {
                 LOG_RESULT_LOCATION(result);
                 return result;
             }
-        } else if (mldl_cfg->accel->id == ACCEL_ID_MMA8450) {
-            result = inv_freescale_sensor_fusion_8bit(orient);
+        } else if (mldl_cfg->slave[EXT_SLAVE_TYPE_ACCEL]->id ==
+                   ACCEL_ID_MMA8450) {
+            result = inv_freescale_sensor_fusion_8bit();
             if (result) {
                 LOG_RESULT_LOCATION(result);
                 return result;
@@ -856,8 +897,8 @@ inv_error_t inv_set_accel_calibration(float range, signed char *orientation)
         }
     }
 
-    if (inv_obj.accel_sens != 0) {
-        sf = (1073741824L / inv_obj.accel_sens);
+    if (inv_obj.accel->sens != 0) {
+        sf = (1073741824L / inv_obj.accel->sens);
     } else {
         sf = 0;
     }
@@ -872,151 +913,127 @@ inv_error_t inv_set_accel_calibration(float range, signed char *orientation)
     return result;
 }
 
-/**
- *  @brief  Sets up the Gyro calibration and scale factor.
- *
- *          Please refer to the provided "9-Axis Sensor Fusion Application
- *          Note" document provided.  Section 5, "Sensor Mounting Orientation"
- *          offers a good coverage on the mounting matrices and explains
- *          how to use them.
- *
- *  @pre    inv_dmp_open()
- *          @ifnot MPL_MF
- *              or inv_open_low_power_pedometer()
- *              or inv_eis_open_dmp()
- *          @endif
- *          must have been called.
- *  @pre    inv_dmp_start() must have <b>NOT</b> been called.
- *
- *  @see    inv_set_accel_calibration().
- *  @see    inv_set_compass_calibration().
- *
- *  @param[in]  range
- *                  The range of the gyros in degrees per second. A gyro
- *                  that has a range of +2000 dps to -2000 dps should pass in
- *                  2000.
- *  @param[in] orientation
- *                  A 9 element matrix that represents how the gyro are oriented
- *                  with respect to the device they are mounted in. A typical
- *                  set of values are {1, 0, 0, 0, 1, 0, 0, 0, 1}. This
- *                  example corresponds to a 3 x 3 identity matrix.
- *
- *  @return INV_SUCCESS if successful or Non-zero error code otherwise.
- */
-inv_error_t inv_set_gyro_calibration(float range, signed char *orientation)
+void inv_set_accel_mounting(signed char *mount)
+{
+    inv_accel_orient = inv_orientation_matrix_to_scalar(mount);
+}
+
+inv_error_t inv_accel_var_cal()
 {
     INVENSENSE_FUNC_START;
-
-    struct mldl_cfg *mldl_cfg = inv_get_dl_config();
-    int kk;
-    float scale;
-    inv_error_t result;
-
-    unsigned char regs[12] = { 0 };
-    unsigned char maxVal = 0;
-    unsigned char tmpPtr = 0;
-    unsigned char tmpSign = 0;
-    unsigned char i = 0;
-    int sf = 0;
 
     if (inv_get_state() != INV_STATE_DMP_OPENED)
         return INV_ERROR_SM_IMPROPER_STATE;
 
-    if (mldl_cfg->gyro_sens_trim != 0) {
-        /* adjust the declared range to consider the gyro_sens_trim
-           of this part when different from the default (first dividend) */
-        range *= (32768.f / 250) / mldl_cfg->gyro_sens_trim;
+    memset(inv_obj.calmat->accel, 0, 9*sizeof(long));
+
+    inv_obj.calmat->accel[inv_accel_orient & 0x03] = SIGNSET(inv_accel_orient & 0x004)*inv_obj.accel->sens;
+    inv_obj.calmat->accel[((inv_accel_orient & 0x18) >> 3) + 3] = SIGNSET(inv_accel_orient & 0x004)*inv_obj.accel->sens;
+    inv_obj.calmat->accel[((inv_accel_orient & 0xc0) >> 6) + 6] = SIGNSET(inv_accel_orient & 0x100)*inv_obj.accel->sens;
+
+    return INV_SUCCESS;
+}
+
+inv_error_t inv_gyro_var_cal()
+{
+    struct mldl_cfg *mldl_cfg = inv_get_dl_config();
+
+    if (inv_get_state() != INV_STATE_DMP_OPENED)
+        return INV_ERROR_SM_IMPROPER_STATE;
+
+    if (mldl_cfg->mpu_chip_info->gyro_sens_trim != 0) {
+        inv_obj.gyro->sens = ((250L << mldl_cfg->mpu_gyro_cfg->full_scale) * (((131L << 15)) / mldl_cfg->mpu_chip_info->gyro_sens_trim));
+    } else {
+        inv_obj.gyro->sens = 2000L << 15;
     }
+    memset(inv_obj.calmat->gyro, 0, 9*sizeof(long));
+    memset(inv_obj.calmat->gyro_orient, 0, 9*sizeof(long));
 
-    scale = range / 32768.f;    // inverse of sensitivity for the given full scale range
-    inv_obj.gyro_sens = (long)(range * 32768L);
+    inv_obj.calmat->gyro[inv_gyro_orient & 0x03] = SIGNSET(inv_gyro_orient & 0x004)*inv_obj.gyro->sens;
+    inv_obj.calmat->gyro[((inv_gyro_orient & 0x18) >> 3) + 3] = SIGNSET(inv_gyro_orient & 0x020)*inv_obj.gyro->sens;
+    inv_obj.calmat->gyro[((inv_gyro_orient & 0xc0) >> 6) + 6] = SIGNSET(inv_gyro_orient & 0x100)*inv_obj.gyro->sens;
+    inv_obj.calmat->gyro_orient[inv_gyro_orient & 0x03] = SIGNSET(inv_gyro_orient & 0x004)*(1L<<30);
+    inv_obj.calmat->gyro_orient[((inv_gyro_orient & 0x18) >> 3)+3] = SIGNSET(inv_gyro_orient & 0x020)*(1L<<30);
+    inv_obj.calmat->gyro_orient[((inv_gyro_orient & 0xc0) >> 6)+6] = SIGNSET(inv_gyro_orient & 0x100)*(1L<<30);
 
-    for (kk = 0; kk < 9; ++kk) {
-        inv_obj.gyro_cal[kk] = (long)(scale * orientation[kk] * (1L << 30));
-        inv_obj.gyro_orient[kk] = (long)((double)orientation[kk] * (1L << 30));
-    }
+    //sf = (gyroSens) * (0.5 * (pi/180) / 200.0) * 16384
+    inv_obj.gyro->sf = inv_q30_mult(inv_obj.gyro->sens, 767603923L);
 
-    {
-#if defined CONFIG_MPU_SENSORS_MPU6050A2 || \
-    defined CONFIG_MPU_SENSORS_MPU6050B1
-        unsigned char tmpD = DINA4C;
-        unsigned char tmpE = DINACD;
-        unsigned char tmpF = DINA6C;
-#else
+    return INV_SUCCESS;
+}
+
+inv_error_t inv_gyro_dmp_cal()
+{
+    struct mldl_cfg *mldl_cfg = inv_get_dl_config();
+
+    unsigned char regs[4];
+    inv_error_t result;
         unsigned char tmpD = DINAC9;
         unsigned char tmpE = DINA2C;
         unsigned char tmpF = DINACB;
-#endif
-        regs[3] = DINA36;
-        regs[4] = DINA56;
-        regs[5] = DINA76;
 
-        for (i = 0; i < 3; i++) {
-            maxVal = 0;
-            tmpSign = 0;
-            if (inv_obj.gyro_orient[0 + 3 * i] < 0)
-                tmpSign = 1;
-            if (ABS(inv_obj.gyro_orient[1 + 3 * i]) >
-                ABS(inv_obj.gyro_orient[0 + 3 * i])) {
-                maxVal = 1;
-                if (inv_obj.gyro_orient[1 + 3 * i] < 0)
-                    tmpSign = 1;
-            }
-            if (ABS(inv_obj.gyro_orient[2 + 3 * i]) >
-                ABS(inv_obj.gyro_orient[1 + 3 * i])) {
-                tmpSign = 0;
-                maxVal = 2;
-                if (inv_obj.gyro_orient[2 + 3 * i] < 0)
-                    tmpSign = 1;
-            }
-            if (maxVal == 0) {
-                regs[tmpPtr++] = tmpD;
-                if (tmpSign)
-                    regs[tmpPtr + 2] |= 0x01;
-            } else if (maxVal == 1) {
-                regs[tmpPtr++] = tmpE;
-                if (tmpSign)
-                    regs[tmpPtr + 2] |= 0x01;
-            } else {
-                regs[tmpPtr++] = tmpF;
-                if (tmpSign)
-                    regs[tmpPtr + 2] |= 0x01;
-            }
-        }
-        result = inv_set_mpu_memory(KEY_FCFG_1, 3, regs);
-        if (result) {
-            LOG_RESULT_LOCATION(result);
-            return result;
-        }
-        result = inv_set_mpu_memory(KEY_FCFG_3, 3, &regs[3]);
-        if (result) {
-            LOG_RESULT_LOCATION(result);
-            return result;
-        }
+    if (inv_get_state() != INV_STATE_DMP_OPENED)
+        return INV_ERROR_SM_IMPROPER_STATE;
 
-        //sf = (gyroSens) * (0.5 * (pi/180) / 200.0) * 16384
-        inv_obj.gyro_sf =
-            (long)(((long long)inv_obj.gyro_sens * 767603923LL) / 1073741824LL);
-        result =
-            inv_set_mpu_memory(KEY_D_0_104, 4,
-                               inv_int32_to_big8(inv_obj.gyro_sf, regs));
-        if (result) {
-            LOG_RESULT_LOCATION(result);
-            return result;
-        }
+    if ( (inv_gyro_orient & 3) == 0 )
+        regs[0] = tmpD;
+    else if ( (inv_gyro_orient & 3) == 1 )
+        regs[0] = tmpE;
+    else if ( (inv_gyro_orient & 3) == 2 )
+        regs[0] = tmpF;
+    if ( (inv_gyro_orient & 0x18) == 0 )
+        regs[1] = tmpD;
+    else if ( (inv_gyro_orient & 0x18) == 0x8 )
+        regs[1] = tmpE;
+    else if ( (inv_gyro_orient & 0x18) == 0x10 )
+        regs[1] = tmpF;
+    if ( (inv_gyro_orient & 0xc0) == 0 )
+        regs[2] = tmpD;
+    else if ( (inv_gyro_orient & 0xc0) == 0x40 )
+        regs[2] = tmpE;
+    else if ( (inv_gyro_orient & 0xc0) == 0x80 )
+        regs[2] = tmpF;
 
-        if (inv_obj.gyro_sens != 0) {
-            sf = (long)((long long)23832619764371LL / inv_obj.gyro_sens);
-        } else {
-            sf = 0;
-        }
-
-        result = inv_set_mpu_memory(KEY_D_0_24, 4, inv_int32_to_big8(sf, regs));
-        if (result) {
-            LOG_RESULT_LOCATION(result);
-            return result;
-        }
+    result = inv_set_mpu_memory(KEY_FCFG_1, 3, regs);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
     }
+
+    if (inv_gyro_orient & 4)
+        regs[0] = DINA36 | 1;
+    else
+        regs[0] = DINA36;
+    if (inv_gyro_orient & 0x20)
+        regs[1] = DINA56 | 1;
+    else
+        regs[1] = DINA56;
+    if (inv_gyro_orient & 0x100)
+        regs[2] = DINA76 | 1;
+    else
+        regs[2] = DINA76;
+
+    result = inv_set_mpu_memory(KEY_FCFG_3, 3, regs);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+
+    if (mldl_cfg->mpu_chip_info->gyro_sens_trim != 0) {
+        inv_obj.gyro->sens = (250L << mldl_cfg->mpu_gyro_cfg->full_scale) *
+                     ((131L << 15) / mldl_cfg->mpu_chip_info->gyro_sens_trim);
+    } else {
+        inv_obj.gyro->sens = 2000L << 15;
+    }
+
+    inv_obj.gyro->sf = inv_q30_mult(inv_obj.gyro->sens, 767603923L);
+    result = inv_set_mpu_memory(KEY_D_0_104, 4,
+                inv_int32_to_big8(inv_obj.gyro->sf, regs));
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+
     return INV_SUCCESS;
 }
 
@@ -1058,20 +1075,21 @@ inv_error_t inv_set_compass_calibration(float range, signed char *orientation)
     float scale = range / 32768.f;
     int kk;
     unsigned short compassId = 0;
+    int errors = 0;
 
     compassId = inv_get_compass_id();
 
     if ((compassId == COMPASS_ID_YAS529) || (compassId == COMPASS_ID_HMC5883)
-        || (compassId == COMPASS_ID_LSM303M)) {
+        || (compassId == COMPASS_ID_LSM303DLH)  || (compassId == COMPASS_ID_LSM303DLM)) {
         scale /= 32.0f;
     }
 
     for (kk = 0; kk < 9; ++kk) {
         cal[kk] = scale * orientation[kk];
-        inv_obj.compass_cal[kk] = (long)(cal[kk] * (float)(1L << 30));
+        inv_obj.calmat->compass[kk] = (long)(cal[kk] * (float)(1L << 30));
     }
 
-    inv_obj.compass_sens = (long)(scale * 1073741824L);
+    inv_obj.mag->sens = (long)(scale * 1073741824L);
 
     if (inv_dmpkey_supported(KEY_CPASS_MTX_00)) {
         unsigned char reg0[4] = { 0, 0, 0, 0 };
@@ -1093,7 +1111,177 @@ inv_error_t inv_set_compass_calibration(float range, signed char *orientation)
                 reg = regn;
             else
                 reg = reg0;
-            inv_set_mpu_memory(keyList[kk], 4, reg);
+            errors += inv_set_mpu_memory(keyList[kk], 4, reg);
+        }
+    }
+    if (errors) {
+        LOG_RESULT_LOCATION(INV_ERROR_MEMORY_SET);
+        return INV_ERROR_MEMORY_SET;
+    }
+
+    return INV_SUCCESS;
+}
+
+/**
+ *  @brief  @e inv_set_dead_zone_high is used to set a large gyro dead zone.
+ *          This setting is typically used when high amounts of jitter are
+ *          expected.For the 3050, calibrated
+ *          gyro data can be zero as a result. For 6050, only the quaternion
+ *          will be affected.
+ *
+ *  @return INV_SUCCESS if successful.
+ */
+inv_error_t inv_set_dead_zone_high(void) {
+    inv_error_t result;
+    unsigned char reg = 0x08, is_registered;
+
+    /* Unregister callback if needed. */
+    result = inv_check_state_callback(inv_dead_zone_CB, &is_registered);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    if (is_registered) {
+        result = inv_unregister_state_callback(inv_dead_zone_CB);
+        if (result) {
+            LOG_RESULT_LOCATION(result);
+            return result;
+        }
+    }
+
+    MPL_LOGV("Dead zone enabled (high).\n");
+
+    result = inv_set_mpu_memory(KEY_D_0_163, 1, &reg);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+
+    return INV_SUCCESS;
+}
+
+/**
+ *  @brief  @e inv_set_dead_zone_zero is used to disable the gyro dead zone.
+ *
+ *  @return INV_SUCCESS if successful.
+ */
+inv_error_t inv_set_dead_zone_zero(void) {
+    inv_error_t result;
+    unsigned char reg = 0, is_registered;
+
+    /* Unregister callback if needed. */
+    result = inv_check_state_callback(inv_dead_zone_CB, &is_registered);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+    if (is_registered) {
+        result = inv_unregister_state_callback(inv_dead_zone_CB);
+        if (result) {
+            LOG_RESULT_LOCATION(result);
+            return result;
+        }
+    }
+
+    MPL_LOGV("Dead zone disabled.\n");
+
+    result = inv_set_mpu_memory(KEY_D_0_163, 1, &reg);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+
+    return INV_SUCCESS;
+}
+
+/**
+ *  @brief      @e inv_set_dead_zone_normal is used to enable the gyro dead
+ *              zone.
+ *              This setting can be configured such that the dead zone is only
+ *              enabled when the compass is not used. For the 3050, calibrated
+ *              gyro data can be zero as a result. For 6050, only the quaternion
+ *              will be affected.
+ *
+ *  @param[in]  check_compass   If 1, only enable dead zone if compass is not
+ *                              present.
+ *
+ *  @return     INV_SUCCESS if successful.
+ */
+inv_error_t inv_set_dead_zone_normal(int check_compass) {
+    inv_error_t result;
+    unsigned char reg, is_registered;
+
+    if (!check_compass || !inv_compass_present()) {
+        MPL_LOGV("Dead zone enabled.\n");
+        reg = 0x02;
+    } else {
+        MPL_LOGV("Dead zone disabled.\n");
+        reg = 0x00;
+    }
+
+    /* Check for dead zone callback. */
+    result = inv_check_state_callback(inv_dead_zone_CB, &is_registered);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+
+    if (check_compass) {
+        if (!is_registered) {
+            result = inv_register_state_callback(inv_dead_zone_CB);
+            if (result) {
+                LOG_RESULT_LOCATION(result);
+                return result;
+            }
+        }
+    } else {
+        if (is_registered) {
+            result = inv_unregister_state_callback(inv_dead_zone_CB);
+            if (result) {
+                LOG_RESULT_LOCATION(result);
+                return result;
+            }
+        }
+    }    
+
+    result = inv_set_mpu_memory(KEY_D_0_163, 1, &reg);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+
+    return INV_SUCCESS;
+}
+
+/**
+ *  @brief      @e inv_dead_zone_CB changes the dead zone on power state
+ *              changes.
+ *              This callback is registered when the user calls
+ *              @e inv_set_dead_zone_normal(true) and an external compass is
+ *              connected. If the compass is turned off, the gyro dead zone
+ *              is enabled; otherwise, the dead zone is set to zero.
+ *
+ *  @param[in]  new_state   New power state.
+ *
+ *  @return     INV_SUCCESS if successful.
+ */
+inv_error_t inv_dead_zone_CB(unsigned char new_state)
+{
+    inv_error_t result;
+    unsigned char reg;
+    if (new_state == INV_STATE_DMP_STARTED) {
+        if (!inv_compass_present()) {
+            MPL_LOGV("Dead zone enabled.\n");
+            reg = 0x02;
+        } else {
+            MPL_LOGV("Dead zone disabled.\n");
+            reg = 0x00;
+        }
+
+        result = inv_set_mpu_memory(KEY_D_0_163, 1, &reg);
+        if (result) {
+            LOG_RESULT_LOCATION(result);
+            return result;
         }
     }
 
@@ -1101,182 +1289,276 @@ inv_error_t inv_set_compass_calibration(float range, signed char *orientation)
 }
 
 /**
-* @internal
-* @brief Sets the Gyro Dead Zone based upon LPF filter settings and Control setup.
-*/
-inv_error_t inv_set_dead_zone(void)
+ *  @brief      @e inv_disable_bias_from_LPF disables the algorithm to
+ *              calculate gyroscope bias from LPF.
+ *
+ *  @return     INV_SUCCESS if successful.
+ */
+inv_error_t inv_disable_bias_from_LPF(void)
 {
-    unsigned char reg;
     inv_error_t result;
-    extern struct control_params cntrl_params;
+    unsigned char regs[4] = {DINA80 + 7, DINA2D, DINA35, DINA3D};
+    unsigned char is_registered;
 
-    if (cntrl_params.functions & INV_DEAD_ZONE) {
-        reg = 0x08;
-    } else {
-#if defined CONFIG_MPU_SENSORS_MPU6050A2 || \
-    defined CONFIG_MPU_SENSORS_MPU6050B1
-        reg = 0;
-#else
-        if (inv_params_obj.bias_mode & INV_BIAS_FROM_LPF) {
-            reg = 0x2;
-        } else {
-            reg = 0;
-        }
-#endif
-    }
-
-    result = inv_set_mpu_memory(KEY_D_0_163, 1, &reg);
+    /* Unregister callback if needed. */
+    result = inv_check_state_callback(inv_bias_from_LPF_CB, &is_registered);
     if (result) {
         LOG_RESULT_LOCATION(result);
         return result;
     }
-    return result;
-}
-
-/**
- *  @brief  inv_set_bias_update is used to register which algorithms will be
- *          used to automatically reset the gyroscope bias.
- *          The engine INV_BIAS_UPDATE must be enabled for these algorithms to
- *          run.
- *
- *  @pre    inv_dmp_open()
- *          @ifnot MPL_MF
- *              or inv_open_low_power_pedometer()
- *              or inv_eis_open_dmp()
- *          @endif
- *          and inv_dmp_start()
- *          must <b>NOT</b> have been called.
- *
- *  @param  function    A function or bitwise OR of functions that determine
- *                      how the gyroscope bias will be automatically updated.
- *                      Functions include:
- *                      - INV_NONE or 0,
- *                      - INV_BIAS_FROM_NO_MOTION,
- *                      - INV_BIAS_FROM_GRAVITY,
- *                      - INV_BIAS_FROM_TEMPERATURE,
-                    \ifnot UMPL
- *                      - INV_BIAS_FROM_LPF,
- *                      - INV_MAG_BIAS_FROM_MOTION,
- *                      - INV_MAG_BIAS_FROM_GYRO,
- *                      - INV_ALL.
- *                   \endif
- *  @return INV_SUCCESS if successful or Non-zero error code otherwise.
- */
-inv_error_t inv_set_bias_update(unsigned short function)
-{
-    INVENSENSE_FUNC_START;
-    unsigned char regs[4];
-    long tmp[3] = { 0, 0, 0 };
-    inv_error_t result = INV_SUCCESS;
-    struct mldl_cfg *mldl_cfg = inv_get_dl_config();
-
-    if (inv_get_state() != INV_STATE_DMP_OPENED)
-        return INV_ERROR_SM_IMPROPER_STATE;
-
-    /* do not allow progressive no motion bias tracker to run -
-       it's not fully debugged */
-    function &= ~INV_PROGRESSIVE_NO_MOTION; // FIXME, workaround
-    MPL_LOGV("forcing disable of PROGRESSIVE_NO_MOTION bias tracker\n");
-
-    // You must use EnableFastNoMotion() to get this feature
-    function &= ~INV_BIAS_FROM_FAST_NO_MOTION;
-
-    // You must use DisableFastNoMotion() to turn this feature off
-    if (inv_params_obj.bias_mode & INV_BIAS_FROM_FAST_NO_MOTION)
-        function |= INV_BIAS_FROM_FAST_NO_MOTION;
-
-    /*--- remove magnetic components from bias tracking
-          if there is no compass ---*/
-    if (!inv_compass_present()) {
-        function &= ~(INV_MAG_BIAS_FROM_GYRO | INV_MAG_BIAS_FROM_MOTION);
-    } else {
-        function &= ~(INV_BIAS_FROM_LPF);
+    if (is_registered) {
+        result = inv_unregister_state_callback(inv_bias_from_LPF_CB);
+        if (result) {
+            LOG_RESULT_LOCATION(result);
+            return result;
+        }
     }
 
-    // Enable function sets bias from no motion
-    inv_params_obj.bias_mode = function & (~INV_BIAS_FROM_NO_MOTION);
-
-    if (function & INV_BIAS_FROM_NO_MOTION) {
-        inv_enable_bias_no_motion();
-    } else {
-        inv_disable_bias_no_motion();
-    }
-
-    if (inv_params_obj.bias_mode & INV_BIAS_FROM_LPF) {
-        regs[0] = DINA80 + 2;
-        regs[1] = DINA2D;
-        regs[2] = DINA55;
-        regs[3] = DINA7D;
-    } else {
-        regs[0] = DINA80 + 7;
-        regs[1] = DINA2D;
-        regs[2] = DINA35;
-        regs[3] = DINA3D;
-    }
     result = inv_set_mpu_memory(KEY_FCFG_5, 4, regs);
     if (result) {
         LOG_RESULT_LOCATION(result);
         return result;
     }
-    result = inv_set_dead_zone();
+
+    MPL_LOGV("Bias from LPF disabled.\n");
+
+    return INV_SUCCESS;
+}
+
+/**
+ *  @brief      @e inv_enable_bias_from_LPF enables the algorithm to calculate
+ *              gyroscope bias from LPF.
+ *
+ *  @param[in]  check_compass   If 1, only update bias from LPF if compass is
+ *                              not present.
+ *
+ *  @return     INV_SUCCESS if successful.
+ */
+inv_error_t inv_enable_bias_from_LPF(int check_compass)
+{
+    inv_error_t result;
+    unsigned char regs[4], is_registered;
+
+    if (!check_compass || !inv_compass_present()) {
+        MPL_LOGV("Bias from LPF enabled.\n");
+        regs[0] = DINA80 + 2;
+        regs[1] = DINA2D;
+        regs[2] = DINA55;
+        regs[3] = DINA7D;
+    } else {
+        MPL_LOGV("Bias from LPF disabled.\n");
+        regs[0] = DINA80 + 7;
+        regs[1] = DINA2D;
+        regs[2] = DINA35;
+        regs[3] = DINA3D;
+    }
+
+    /* Check for bias from LPF callback. */
+    result = inv_check_state_callback(inv_bias_from_LPF_CB, &is_registered);
     if (result) {
         LOG_RESULT_LOCATION(result);
         return result;
     }
 
-    if ((inv_params_obj.bias_mode & INV_BIAS_FROM_GRAVITY) &&
-        !inv_compass_present()) {
-        result = inv_set_gyro_data_source(INV_GYRO_FROM_QUATERNION);
+    if (check_compass) {
+        if (!is_registered) {
+            result = inv_register_state_callback(inv_bias_from_LPF_CB);
+            if (result) {
+                LOG_RESULT_LOCATION(result);
+                return result;
+            }
+        }
+    } else {
+        if (is_registered) {
+            result = inv_unregister_state_callback(inv_bias_from_LPF_CB);
+            if (result) {
+                LOG_RESULT_LOCATION(result);
+                return result;
+            }
+        }
+    }
+
+    result = inv_set_mpu_memory(KEY_FCFG_5, 4, regs);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+
+    return INV_SUCCESS;
+}
+
+/**
+ *  @brief      @e inv_bias_from_LPF_CB enables/disables gyro bias from LPF
+                algorithm on power state changes.
+ *              This callback is registered when the user calls
+ *              @e inv_enable_bias_from_LPF(true). If the compass is turned 
+ *              off, the bias from LPF algorithm is enabled; otherwise the
+ *              algorithm is turned off.
+ *
+ *  @param[in]  new_state   New power state.
+ *
+ *  @return     INV_SUCCESS if successful.
+ */
+inv_error_t inv_bias_from_LPF_CB(unsigned char new_state)
+{
+    inv_error_t result;
+    unsigned char regs[4];
+    if (new_state == INV_STATE_DMP_STARTED) {
+        if (!inv_compass_present()) {
+            MPL_LOGV("Bias from LPF enabled.\n");
+            regs[0] = DINA80 + 2;
+            regs[1] = DINA2D;
+            regs[2] = DINA55;
+            regs[3] = DINA7D;
+        } else {
+            MPL_LOGV("Bias from LPF disabled.\n");
+            regs[0] = DINA80 + 7;
+            regs[1] = DINA2D;
+            regs[2] = DINA35;
+            regs[3] = DINA3D;
+        }
+
+        result = inv_set_mpu_memory(KEY_FCFG_5, 4, regs);
         if (result) {
             LOG_RESULT_LOCATION(result);
             return result;
         }
+    }
+
+    return INV_SUCCESS;
+}
+
+/**
+ *  @brief      @e inv_enable_bias_from_gravity turns on the algorithm to
+ *              produce gyro data from the 6-axis quaternion. 
+ *              This function determines which type of data (raw gyro or 
+ *              accel-compensated gyro) will appear in the FIFO.
+ *
+ *  @param[in]  check_compass   If 1, algorithm is only used when compass is
+ *                              not used.
+ *
+ *  @return INV_SUCCESS if successful.
+ */
+inv_error_t inv_enable_bias_from_gravity(int check_compass)
+{
+    inv_error_t result;
+    unsigned char is_registered;
+
+    if (!check_compass || !inv_compass_present()) {
+        MPL_LOGV("Bias from Gravity enabled.\n");
+        result = inv_set_gyro_data_source(INV_GYRO_FROM_QUATERNION);
     } else {
+        MPL_LOGV("Bias from Gravity disabled.\n");
+        result = inv_set_gyro_data_source(INV_GYRO_FROM_RAW);
+    }
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+
+    /* Check for bias from gravity callback. */
+    result = inv_check_state_callback(inv_bias_from_gravity_CB, 
+        &is_registered);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+
+    if (check_compass) {
+        if (!is_registered) {
+            /* Register callback. */
+            result = inv_register_state_callback(inv_bias_from_gravity_CB);
+            if (result) {
+                LOG_RESULT_LOCATION(result);
+                return result;
+            }
+        }
+    } else {
+        if (is_registered) {
+            /* Unregister callback. */
+            result = inv_unregister_state_callback(inv_bias_from_gravity_CB);
+            if (result) {
+                LOG_RESULT_LOCATION(result);
+                return result;
+            }
+        }
+    }
+
+    return INV_SUCCESS;
+}
+
+/**
+ *  @brief  @e inv_disable_bias_from_gravity turns off the algorithm to
+ *          produce gyro data from the 6-axis quaternion.
+ *
+ *  @return INV_SUCCESS if successful.
+ */
+inv_error_t inv_disable_bias_from_gravity(void)
+{
+    inv_error_t result;
+    unsigned char is_registered;
+
+    result = inv_set_gyro_data_source(INV_GYRO_FROM_RAW);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+
+    /* Check for bias from gravity callback. */
+    result = inv_check_state_callback(inv_bias_from_gravity_CB, 
+        &is_registered);
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+
+    if (is_registered) {
+        /* Unregister callback. */
+        result = inv_unregister_state_callback(inv_bias_from_gravity_CB);
+        if (result) {
+            LOG_RESULT_LOCATION(result);
+            return result;
+        }
+    }
+
+    MPL_LOGV("Bias from Gravity disabled.\n");
+
+    return INV_SUCCESS;
+}
+
+/**
+ *  @brief      @e inv_bias_from_gravity_CB enables/disables the gyro bias from
+ *              gravity algorithm on power state changes.
+ *              This callback is registered when the user calls
+ *              @e inv_enable_bias_from_gravity(true). If the compass is turned
+ *              off, the algorithm is enabled; otherwise the algorithm is
+ *              disabled.
+ *
+ *  @param[in]  new_state   New power state.
+ *
+ *  @return     INV_SUCCESS if successful.
+ */
+inv_error_t inv_bias_from_gravity_CB(unsigned char new_state)
+{
+    inv_error_t result;
+
+    if (inv_compass_present()) {
+        MPL_LOGV("Bias from Gravity disabled.\n");
         result = inv_set_gyro_data_source(INV_GYRO_FROM_RAW);
         if (result) {
             LOG_RESULT_LOCATION(result);
             return result;
         }
-    }
-
-    inv_obj.factory_temp_comp = 0;  // FIXME, workaround
-    if ((mldl_cfg->offset_tc[0] != 0) ||
-        (mldl_cfg->offset_tc[1] != 0) || (mldl_cfg->offset_tc[2] != 0)) {
-        inv_obj.factory_temp_comp = 1;
-    }
-
-    if (inv_obj.factory_temp_comp == 0) {
-        if (inv_params_obj.bias_mode & INV_BIAS_FROM_TEMPERATURE) {
-            result = inv_set_gyro_temp_slope(inv_obj.temp_slope);
-            if (result) {
-                LOG_RESULT_LOCATION(result);
-                return result;
-            }
-        } else {
-            result = inv_set_gyro_temp_slope(tmp);
-            if (result) {
-                LOG_RESULT_LOCATION(result);
-                return result;
-            }
-        }
     } else {
-        inv_params_obj.bias_mode &= ~INV_LEARN_BIAS_FROM_TEMPERATURE;
-        MPL_LOGV("factory temperature compensation coefficients available - "
-                 "disabling INV_LEARN_BIAS_FROM_TEMPERATURE\n");
+        MPL_LOGV("Bias from Gravity enabled.\n");
+        result = inv_set_gyro_data_source(INV_GYRO_FROM_QUATERNION);
+        if (result) {
+            LOG_RESULT_LOCATION(result);
+            return result;
+        }
     }
 
-    /*---- hard requirement for using bias tracking BIAS_FROM_GRAVITY, relying on
-           compass and accel data, is to have accelerometer data delivered in the
-           FIFO ----*/
-    if (((inv_params_obj.bias_mode & INV_BIAS_FROM_GRAVITY)
-         && inv_compass_present())
-        || (inv_params_obj.bias_mode & INV_MAG_BIAS_FROM_GYRO)
-        || (inv_params_obj.bias_mode & INV_MAG_BIAS_FROM_MOTION)) {
-        inv_send_accel(INV_ALL, INV_32_BIT);
-        inv_send_gyro(INV_ALL, INV_32_BIT);
-    }
-
-    return result;
+    return INV_SUCCESS;
 }
 
 /**
@@ -1298,7 +1580,7 @@ inv_error_t inv_set_bias_update(unsigned short function)
 int inv_get_motion_state(void)
 {
     INVENSENSE_FUNC_START;
-    return inv_obj.motion_state;
+    return inv_obj.lite_fusion->motion_state;
 }
 
 /**
@@ -1329,7 +1611,6 @@ inv_error_t inv_set_no_motion_thresh(float thresh)
     } else if (tmp > 8180000L) {
         return INV_ERROR;
     }
-    inv_obj.no_motion_threshold = tmp;
 
     regs[0] = (unsigned char)(tmp >> 24);
     regs[1] = (unsigned char)((tmp >> 16) & 0xff);
@@ -1342,6 +1623,11 @@ inv_error_t inv_set_no_motion_thresh(float thresh)
         return result;
     }
     result = inv_reset_motion();
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+
     return result;
 }
 
@@ -1365,8 +1651,8 @@ inv_error_t inv_set_no_motion_threshAccel(long thresh)
 {
     INVENSENSE_FUNC_START;
 
-    inv_obj.no_motion_accel_threshold = thresh;
-
+    inv_obj.lite_fusion->no_motion_accel_threshold = thresh;
+    inv_obj.lite_fusion->no_motion_accel_sqrt_threshold = 1 + (long)sqrtf((float)thresh);
     return INV_SUCCESS;
 }
 
@@ -1399,16 +1685,21 @@ inv_error_t inv_set_no_motion_time(float time)
     } else if (tmp > 65535L) {
         return INV_ERROR;
     }
-    inv_obj.motion_duration = (unsigned short)tmp;
+    inv_obj.lite_fusion->motion_duration = (unsigned short)tmp;
 
-    regs[0] = (unsigned char)((inv_obj.motion_duration >> 8) & 0xff);
-    regs[1] = (unsigned char)(inv_obj.motion_duration & 0xff);
+    regs[0] = (unsigned char)((inv_obj.lite_fusion->motion_duration >> 8) & 0xff);
+    regs[1] = (unsigned char)(inv_obj.lite_fusion->motion_duration & 0xff);
     result = inv_set_mpu_memory(KEY_D_1_106, 2, regs);
     if (result) {
         LOG_RESULT_LOCATION(result);
         return result;
     }
     result = inv_reset_motion();
+    if (result) {
+        LOG_RESULT_LOCATION(result);
+        return result;
+    }
+	
     return result;
 }
 
@@ -1437,12 +1728,12 @@ inv_error_t inv_get_version(unsigned char **version)
  * This is not a physical check but a logical check and the value can change
  * dynamically based on calls to inv_set_mpu_sensors().
  *
- * @return  TRUE if the gyro is enabled FALSE otherwise.
+ * @return  true if the gyro is enabled false otherwise.
  */
 int inv_get_gyro_present(void)
 {
-    return inv_get_dl_config()->requested_sensors & (INV_X_GYRO | INV_Y_GYRO |
-                                                     INV_Z_GYRO);
+    return inv_get_dl_config()->inv_mpu_cfg->requested_sensors &
+        (INV_X_GYRO | INV_Y_GYRO | INV_Z_GYRO);
 }
 
 static unsigned short inv_row_2_scale(const signed char *row)
@@ -1491,12 +1782,13 @@ unsigned short inv_orientation_matrix_to_scalar(const signed char *mtx)
 *  to the Board Orientation often times called the Body Orientation in Invensense Documentation.
 *  inv_orientation_matrix_to_scalar() will turn the transformation matrix into this scalar.
 */
-inv_error_t inv_freescale_sensor_fusion_16bit(unsigned short orient)
+inv_error_t inv_freescale_sensor_fusion_16bit()
 {
     unsigned char rr[3];
     inv_error_t result;
+    unsigned short orient;
 
-    orient = orient & 0xdb;
+    orient = inv_accel_orient & 0xdb;
     switch (orient) {
     default:
         // Typically 0x88
@@ -1540,13 +1832,12 @@ inv_error_t inv_freescale_sensor_fusion_16bit(unsigned short orient)
 *  to the Board Orientation often times called the Body Orientation in Invensense Documentation.
 *  inv_orientation_matrix_to_scalar() will turn the transformation matrix into this scalar.
 */
-inv_error_t inv_freescale_sensor_fusion_8bit(unsigned short orient)
+inv_error_t inv_freescale_sensor_fusion_8bit()
 {
     unsigned char regs[27];
     inv_error_t result;
     uint_fast8_t kk;
 
-    orient = orient & 0xdb;
     kk = 0;
 
     regs[kk++] = DINAC3;
@@ -1561,7 +1852,7 @@ inv_error_t inv_freescale_sensor_fusion_8bit(unsigned short orient)
     regs[kk++] = DINA90 + 9;
     regs[kk++] = DINAF8 + 2;
 
-    switch (orient) {
+    switch (inv_accel_orient & 0xdb) {
     default:
         // Typically 0x88
         regs[kk++] = DINACB;
@@ -1681,7 +1972,6 @@ inv_error_t inv_set_mpu_sensors(unsigned long sensors)
     unsigned char state = inv_get_state();
     struct mldl_cfg *mldl_cfg = inv_get_dl_config();
     inv_error_t result = INV_SUCCESS;
-    unsigned short fifoRate;
 
     if (state < INV_STATE_DMP_OPENED)
         return INV_ERROR_SM_IMPROPER_STATE;
@@ -1691,7 +1981,7 @@ inv_error_t inv_set_mpu_sensors(unsigned long sensors)
         return INV_ERROR_FEATURE_NOT_IMPLEMENTED;
     }
     if (((sensors & INV_THREE_AXIS_ACCEL) != 0) &&
-        (mldl_cfg->pdata->accel.get_slave_descr == 0)) {
+        (!mldl_cfg->pdata_slave[EXT_SLAVE_TYPE_ACCEL])) {
         return INV_ERROR_SERIAL_DEVICE_NOT_RECOGNIZED;
     }
 
@@ -1700,7 +1990,7 @@ inv_error_t inv_set_mpu_sensors(unsigned long sensors)
         return INV_ERROR_FEATURE_NOT_IMPLEMENTED;
     }
     if (((sensors & INV_THREE_AXIS_COMPASS) != 0) &&
-        (mldl_cfg->pdata->compass.get_slave_descr == 0)) {
+        (!mldl_cfg->pdata_slave[EXT_SLAVE_TYPE_COMPASS])) {
         return INV_ERROR_SERIAL_DEVICE_NOT_RECOGNIZED;
     }
 
@@ -1709,21 +1999,22 @@ inv_error_t inv_set_mpu_sensors(unsigned long sensors)
         return INV_ERROR_FEATURE_NOT_IMPLEMENTED;
     }
     if (((sensors & INV_THREE_AXIS_PRESSURE) != 0) &&
-        (mldl_cfg->pdata->pressure.get_slave_descr == 0)) {
+        (!mldl_cfg->pdata_slave[EXT_SLAVE_TYPE_PRESSURE])) {
         return INV_ERROR_SERIAL_DEVICE_NOT_RECOGNIZED;
     }
 
     /* DMP was off, and is turning on */
     if (sensors & INV_DMP_PROCESSOR &&
-        !(mldl_cfg->requested_sensors & INV_DMP_PROCESSOR)) {
+        !(mldl_cfg->inv_mpu_cfg->requested_sensors & INV_DMP_PROCESSOR)) {
         struct ext_slave_config config;
         long odr;
         config.key = MPU_SLAVE_CONFIG_ODR_RESUME;
         config.len = sizeof(long);
-        config.apply = (state == INV_STATE_DMP_STARTED);
+        config.apply = !(mldl_cfg->inv_mpu_state->status &
+                         MPU_ACCEL_IS_SUSPENDED);
         config.data = &odr;
 
-        odr = (inv_mpu_get_sampling_rate_hz(mldl_cfg) * 1000);
+        odr = (inv_mpu_get_sampling_rate_hz(mldl_cfg->mpu_gyro_cfg) * 1000);
         result = inv_mpu_config_accel(mldl_cfg,
                                       inv_get_serial_handle(),
                                       inv_get_serial_handle(), &config);
@@ -1743,18 +2034,18 @@ inv_error_t inv_set_mpu_sensors(unsigned long sensors)
         }
         inv_init_fifo_hardare();
     }
-
-    if (inv_obj.mode_change_func) {
-        result = inv_obj.mode_change_func(mldl_cfg->requested_sensors, sensors);
+    if (IS_INV_ADVFEATURES_ENABLED(inv_obj) &&
+        (inv_obj.adv_fusion->mode_change_cb)) {
+        result = inv_obj.adv_fusion->mode_change_cb(
+            mldl_cfg->inv_mpu_cfg->requested_sensors, sensors);
         if (result) {
             LOG_RESULT_LOCATION(result);
             return result;
         }
     }
 
-    /* Get the fifo rate before changing sensors so if we need to match it */
-    fifoRate = inv_get_fifo_rate();
-    mldl_cfg->requested_sensors = sensors;
+
+    mldl_cfg->inv_mpu_cfg->requested_sensors = sensors;
 
     /* inv_dmp_start will turn the sensors on */
     if (state == INV_STATE_DMP_STARTED) {
@@ -1775,7 +2066,9 @@ inv_error_t inv_set_mpu_sensors(unsigned long sensors)
         }
     }
 
-    inv_set_fifo_rate(fifoRate);
+    /* Set output rate to default FIFO rate */
+    if ((sensors & INV_THREE_AXIS_ACCEL) || (sensors & INV_DMP_PROCESSOR))
+        inv_set_fifo_rate(0xffff);
 
     if (!(sensors & INV_DMP_PROCESSOR) && (sensors & INV_THREE_AXIS_ACCEL)) {
         struct ext_slave_config config;
@@ -1783,7 +2076,8 @@ inv_error_t inv_set_mpu_sensors(unsigned long sensors)
 
         config.len = sizeof(long);
         config.key = MPU_SLAVE_CONFIG_IRQ_RESUME;
-        config.apply = (state == INV_STATE_DMP_STARTED);
+        config.apply = !(mldl_cfg->inv_mpu_state->status &
+                         MPU_ACCEL_IS_SUSPENDED);
         config.data = &data;
         data = MPU_SLAVE_IRQ_TYPE_DATA_READY;
         result = inv_mpu_config_accel(mldl_cfg,
@@ -1801,73 +2095,12 @@ inv_error_t inv_set_mpu_sensors(unsigned long sensors)
 void inv_set_mode_change(inv_error_t(*mode_change_func)
                          (unsigned long, unsigned long))
 {
-    inv_obj.mode_change_func = mode_change_func;
+    inv_obj.adv_fusion->mode_change_cb = mode_change_func;
 }
 
 /**
-* Mantis setup
+* MPU6050 setup
 */
-#ifdef CONFIG_MPU_SENSORS_MPU6050B1
-inv_error_t inv_set_mpu_6050_config()
-{
-    long temp;
-    inv_error_t result;
-    unsigned char big8[4];
-    unsigned char atc[4];
-    long s[3], s2[3];
-    int kk;
-    struct mldl_cfg *mldlCfg = inv_get_dl_config();
-
-    result = inv_serial_read(inv_get_serial_handle(), inv_get_mpu_slave_addr(),
-                             0x0d, 4, atc);
-    if (result) {
-        LOG_RESULT_LOCATION(result);
-        return result;
-    }
-
-    temp = atc[3] & 0x3f;
-    if (temp >= 32)
-        temp = temp - 64;
-    temp = (temp << 21) | 0x100000;
-    temp += (1L << 29);
-    temp = -temp;
-    result = inv_set_mpu_memory(KEY_D_ACT0, 4, inv_int32_to_big8(temp, big8));
-    if (result) {
-        LOG_RESULT_LOCATION(result);
-        return result;
-    }
-
-    for (kk = 0; kk < 3; ++kk) {
-        s[kk] = atc[kk] & 0x3f;
-        if (s[kk] > 32)
-            s[kk] = s[kk] - 64;
-        s[kk] *= 2516582L;
-    }
-
-    for (kk = 0; kk < 3; ++kk) {
-        s2[kk] = mldlCfg->pdata->orientation[kk * 3] * s[0] +
-            mldlCfg->pdata->orientation[kk * 3 + 1] * s[1] +
-            mldlCfg->pdata->orientation[kk * 3 + 2] * s[2];
-    }
-    result = inv_set_mpu_memory(KEY_D_ACSX, 4, inv_int32_to_big8(s2[0], big8));
-    if (result) {
-        LOG_RESULT_LOCATION(result);
-        return result;
-    }
-    result = inv_set_mpu_memory(KEY_D_ACSY, 4, inv_int32_to_big8(s2[1], big8));
-    if (result) {
-        LOG_RESULT_LOCATION(result);
-        return result;
-    }
-    result = inv_set_mpu_memory(KEY_D_ACSZ, 4, inv_int32_to_big8(s2[2], big8));
-    if (result) {
-        LOG_RESULT_LOCATION(result);
-        return result;
-    }
-
-    return result;
-}
-#endif
 
 /**
  * @}
